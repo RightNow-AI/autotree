@@ -49,6 +49,39 @@ re-gate, merge, report SHA.
   Qwen3-8B / Llama-3.1-8B) and Triton kernel validation need a Linux GPU box
   (8xH100 target).
 
+## STATUS 2026-07-18 00:45 - paused on quota exhaustion (AUTOTREE-003)
+
+Transport changed: the codex plugin companion's write mode is broken
+machine-wide (elevated Windows sandbox hangs headless; unelevated breaks
+apply_patch; `~/.codex/config.toml` `[windows] sandbox` was switched to
+"unelevated" as the documented fallback and codex-cli is back on 0.144.4).
+Founder supplied the working method, now the law for lanes:
+`codex exec --cd <worktree> --sandbox danger-full-access --model gpt-5.6-sol
+"$(cat brief-file)" < /dev/null > lane.log 2>&1`, background; brief always a
+file; waves of TWO; log-is-truth watchers (finish marker "tokens used",
+crash signature -1073741502, 12-min frozen log). Wrapper processes get killed
+on this machine but codex children survive - trust logs, not process state.
+Two host crash storms (0xC0000142 = desktop-heap/memory exhaustion; watch
+RunPipe-voice/RunPipe-reviewfix Next dev servers at 3-4GB each) interrupted
+lanes; recovery = `codex exec ... resume <session-id> "<audit-first prompt>"`.
+
+Per-lane state (orchestrator independently re-gated fresh, all green):
+
+| Lane | Commits | Verified by orchestrator | Remaining | Resume session id |
+|---|---|---|---|---|
+| scheduler-rs | `4c1bc38` DONE (21 files, 3,492 lines) | cargo fmt+clippy+test all pass | nothing - ready for merge review | 019f71a3-f16f-7f02-876f-cdceaceab0b5 |
+| core-kv | `1ea8c5d`, `bfe833b`, `9ed2d9a` | `71 passed` in tests/kv | commit property test, COW+prune red-run mutation proofs, __init__ exports, core/README.md, final clean gate | 019f71a3-b6df-76e0-afe1-8ca13e805e32 |
+| tree-attention | `bf0d391` | `62 passed, 45 skipped` in tests/kernels | commit dispatch.py/bench_decode.py/kernels __init__ + modified reference/tests, final gates; GPU parity stays skip-marked | 019f71d8-7816-7013-9487-372c45eb2be4 |
+| serve-api | none - never started | - | full brief from scratch (`scratchpad/brief-serve-api.md`, copy in this repo's history) | none - fresh launch |
+
+Lane logs (session scratchpad):
+`C:/Users/jaber/AppData/Local/Temp/claude/C--Users-jaber-RightNow-Full-AutoTree/be156b72-bf28-4d23-b997-33e79fd6a35b/scratchpad/lane-*.log`
+Resume prompt templates: `resume-core-kv-r3.md` (pattern: audit-first, re-verify
+gates fresh, commit green work early, stop honestly on host failure).
+
+Known token spend visible in finish markers: 191,479 + 371,485 (first
+attempts) + 295,876 (core-kv r3) + resumed-run totals in the r2 logs.
+
 ## Next session
 
 Read this file, check the four job ids, gate each lane's diff (companion
