@@ -39,8 +39,8 @@ def _validate_inputs(
         raise ValueError("num_q_heads must be a multiple of num_kv_heads")
     if num_pages < 1 or page_size < 1:
         raise ValueError("KV caches must contain at least one non-empty page")
-    if not torch.is_floating_point(q) or not torch.is_floating_point(k_cache):
-        raise TypeError("q, k_cache, and v_cache must be floating-point tensors")
+    if q.dtype not in (torch.float16, torch.bfloat16, torch.float32):
+        raise TypeError("tree attention supports fp16, bf16, and fp32 tensors")
     if q.dtype != k_cache.dtype or k_cache.dtype != v_cache.dtype:
         raise TypeError("q, k_cache, and v_cache must have the same dtype")
     if q.device != k_cache.device or k_cache.device != v_cache.device:
@@ -49,10 +49,8 @@ def _validate_inputs(
         raise ValueError(
             "block_tables and context_lens must be on the attention device"
         )
-    if block_tables.dtype not in (torch.int32, torch.int64):
-        raise TypeError("block_tables must use an integer dtype")
-    if context_lens.dtype not in (torch.int32, torch.int64):
-        raise TypeError("context_lens must use an integer dtype")
+    if block_tables.dtype != torch.int32 or context_lens.dtype != torch.int32:
+        raise TypeError("block_tables and context_lens must use int32")
 
     effective_scale = 1.0 / sqrt(head_dim) if scale is None else float(scale)
     if not isfinite(effective_scale):

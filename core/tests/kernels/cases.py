@@ -9,6 +9,16 @@ import torch
 import torch.nn.functional as F
 
 
+BRANCH_COUNTS = (1, 7, 33)
+CONTEXT_REMAINDERS = (0, 1, 15)
+GQA_RATIOS = (1, 4)
+REFERENCE_DTYPES = (torch.float32, torch.float16)
+
+
+def matrix_seed(num_branches: int, gqa_ratio: int, context_remainder: int) -> int:
+    return 10_000 + num_branches * 100 + gqa_ratio * 10 + context_remainder
+
+
 @dataclass(frozen=True)
 class TreeAttentionCase:
     q: torch.Tensor
@@ -153,6 +163,50 @@ def build_random_tree_case(
         dense_k=tuple(dense_k),
         dense_v=tuple(dense_v),
     )
+
+
+def build_accumulation_stress_case(dtype: torch.dtype) -> TreeAttentionCase:
+    """Build nonuniform logits that expose low-precision Flash probabilities."""
+    generator = torch.Generator().manual_seed(0)
+    context_len = 17
+    page_size = 16
+    q = torch.randn((1, 1, 1), generator=generator).to(dtype)
+    dense_k = (torch.randn((context_len, 1, 1), generator=generator) * 2).to(dtype)
+    dense_v = (torch.randn((context_len, 1, 1), generator=generator) * 500).to(dtype)
+    k_cache = torch.zeros((2, page_size, 1, 1), dtype=dtype)
+    v_cache = torch.zeros_like(k_cache)
+    k_cache.view(-1, 1, 1)[:context_len] = dense_k
+    v_cache.view(-1, 1, 1)[:context_len] = dense_v
+    return TreeAttentionCase(
+        q=q,
+        k_cache=k_cache,
+        v_cache=v_cache,
+        block_tables=torch.tensor([[0, 1]], dtype=torch.int32),
+        context_lens=torch.tensor([context_len], dtype=torch.int32),
+        dense_k=(dense_k,),
+        dense_v=(dense_v,),
+    )
+
+
+def rounded_probability_flash_output(case: TreeAttentionCase) -> torch.Tensor:
+    """Simulate the rejected path that rounds online probabilities to input dtype."""
+    scores = (case.dense_k[0][:, 0, :].float() * case.q[0, 0, :].float()).sum(dim=-1)
+    running_max = torch.tensor(float("-inf"))
+    running_sum = torch.tensor(0.0)
+    accumulator = torch.zeros(case.q.shape[-1], dtype=torch.float32)
+    page_size = case.k_cache.shape[1]
+    for start in range(0, scores.numel(), page_size):
+        page_scores = scores[start : start + page_size]
+        page_values = case.dense_v[0][start : start + page_size, 0, :].float()
+        next_max = torch.maximum(running_max, page_scores.max())
+        correction = torch.exp(running_max - next_max)
+        probabilities = torch.exp(page_scores - next_max)
+        accumulator = accumulator * correction + (
+            probabilities.to(case.q.dtype).float()[:, None] * page_values
+        ).sum(dim=0)
+        running_sum = running_sum * correction + probabilities.sum()
+        running_max = next_max
+    return (accumulator / running_sum).to(case.q.dtype).reshape(1, 1, -1)
 
 
 def dense_sdpa_oracle(
