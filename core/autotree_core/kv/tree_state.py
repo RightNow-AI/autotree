@@ -1,9 +1,11 @@
 """Branch lifecycle and copy-on-write appends for paged KV state."""
 
+from collections import Counter
 from dataclasses import dataclass, field
 
 import torch
 
+from .dedup import _discover_page_redirects
 from .errors import BranchHasChildrenError, KVInvariantError
 from .gather import gather_branch_kv
 from .pool import PagedKVPool
@@ -31,7 +33,7 @@ class _BranchRecord:
 class TreeState:
     """Own branch topology and logical views over a paged KV pool."""
 
-    __slots__ = ("_branches", "_next_branch_id", "_pool")
+    __slots__ = ("_branches", "_next_branch_id", "_pool", "__weakref__")
 
     def __init__(self, pool: PagedKVPool) -> None:
         if not isinstance(pool, PagedKVPool):
@@ -46,6 +48,7 @@ class TreeState:
             )
         }
         self._next_branch_id = self.root_id + 1
+        self._pool._bind_tree_state(self)
 
     @property
     def root_id(self) -> int:
@@ -83,6 +86,45 @@ class TreeState:
     def get_branch(self, branch_id: int) -> Branch:
         """Return a detached snapshot of one live branch."""
         return self._snapshot(self._get_record(branch_id))
+
+    def dedup_scan(self) -> int:
+        """Merge byte-identical full pages and return physical pages freed."""
+        records = tuple(
+            sorted(self._branches.values(), key=lambda record: record.branch_id)
+        )
+        page_occurrences: Counter[int] = Counter()
+        for record in records:
+            self._validate_branch_coverage(record)
+            page_occurrences.update(record.block_table)
+
+        for page_id in sorted(page_occurrences):
+            expected_refcount = page_occurrences[page_id]
+            actual_refcount = self._pool.refcount(page_id)
+            if actual_refcount != expected_refcount:
+                raise KVInvariantError(
+                    f"page {page_id} refcount {actual_refcount} does not match "
+                    f"{expected_refcount} live block-table occurrence(s)"
+                )
+
+        redirects = _discover_page_redirects(self._pool, page_occurrences)
+        if not redirects:
+            return 0
+
+        for duplicate_page_id in sorted(redirects):
+            canonical_page_id = redirects[duplicate_page_id]
+            for _ in range(page_occurrences[duplicate_page_id]):
+                self._pool._retain(canonical_page_id)
+
+        for record in records:
+            record.block_table[:] = [
+                redirects.get(page_id, page_id) for page_id in record.block_table
+            ]
+
+        for duplicate_page_id in sorted(redirects):
+            for _ in range(page_occurrences[duplicate_page_id]):
+                self._pool.free(duplicate_page_id)
+
+        return len(redirects)
 
     def append_token(
         self,

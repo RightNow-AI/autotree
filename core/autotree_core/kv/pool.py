@@ -1,12 +1,19 @@
 """Fixed-capacity paged storage for per-layer key and value tensors."""
 
+from __future__ import annotations
+
 import heapq
+import weakref
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import torch
 
 from .config import KVPoolConfig
 from .errors import KVCapacityError, KVInvariantError
+
+if TYPE_CHECKING:
+    from .tree_state import TreeState
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,17 +40,16 @@ class PagedKVPool:
         )
         tensor_options = {"dtype": config.dtype, "device": config.device}
         self.k_cache = tuple(
-            torch.zeros(cache_shape, **tensor_options)
-            for _ in range(config.num_layers)
+            torch.zeros(cache_shape, **tensor_options) for _ in range(config.num_layers)
         )
         self.v_cache = tuple(
-            torch.zeros(cache_shape, **tensor_options)
-            for _ in range(config.num_layers)
+            torch.zeros(cache_shape, **tensor_options) for _ in range(config.num_layers)
         )
         self._refcounts = [0] * config.capacity
         self._valid_lengths = [0] * config.capacity
         self._free_pages = list(range(config.capacity))
         self._logical_tokens = 0
+        self._bound_tree_state: weakref.ReferenceType[TreeState] | None = None
 
     @property
     def used_pages(self) -> int:
@@ -84,6 +90,15 @@ class PagedKVPool:
             kv_reuse_ratio=self.kv_reuse_ratio,
         )
 
+    def dedup_scan(self) -> int:
+        """Deduplicate full pages owned by this pool's bound tree state."""
+        tree_state = (
+            self._bound_tree_state() if self._bound_tree_state is not None else None
+        )
+        if tree_state is None:
+            raise KVInvariantError("KV pool is not bound to a TreeState")
+        return tree_state.dedup_scan()
+
     def alloc_page(self) -> int:
         """Allocate the lowest available page with a reference count of one."""
         if not self._free_pages:
@@ -108,7 +123,6 @@ class PagedKVPool:
             self._refcounts[page_id] -= 1
             return
 
-        self._zero_page(page_id)
         self._valid_lengths[page_id] = 0
         self._refcounts[page_id] = 0
         heapq.heappush(self._free_pages, page_id)
@@ -131,6 +145,19 @@ class PagedKVPool:
         if new_value < 0:
             raise KVInvariantError("logical token count cannot be negative")
         self._logical_tokens = new_value
+
+    def _bind_tree_state(self, tree_state: TreeState) -> None:
+        """Bind the pool to its sole tree state before either owns pages."""
+        if self._bound_tree_state is not None and self._bound_tree_state() is not None:
+            raise KVInvariantError("KV pool is already bound to a TreeState")
+        if (
+            self.used_pages != 0
+            or self.logical_tokens != 0
+            or any(self._refcounts)
+            or any(self._valid_lengths)
+        ):
+            raise KVInvariantError("TreeState requires an empty KV pool")
+        self._bound_tree_state = weakref.ref(tree_state)
 
     def _require_capacity(self, required_pages: int) -> None:
         """Validate that a multi-page operation can allocate atomically."""
