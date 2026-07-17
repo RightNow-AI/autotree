@@ -41,6 +41,7 @@ class PagedKVPool:
             for _ in range(config.num_layers)
         )
         self._refcounts = [0] * config.capacity
+        self._valid_lengths = [0] * config.capacity
         self._free_pages = list(range(config.capacity))
         self._logical_tokens = 0
 
@@ -96,6 +97,7 @@ class PagedKVPool:
 
         page_id = heapq.heappop(self._free_pages)
         self._zero_page(page_id)
+        self._valid_lengths[page_id] = 0
         self._refcounts[page_id] = 1
         return page_id
 
@@ -107,6 +109,7 @@ class PagedKVPool:
             return
 
         self._zero_page(page_id)
+        self._valid_lengths[page_id] = 0
         self._refcounts[page_id] = 0
         heapq.heappush(self._free_pages, page_id)
 
@@ -128,6 +131,52 @@ class PagedKVPool:
         if new_value < 0:
             raise KVInvariantError("logical token count cannot be negative")
         self._logical_tokens = new_value
+
+    def _require_capacity(self, required_pages: int) -> None:
+        """Validate that a multi-page operation can allocate atomically."""
+        if (
+            isinstance(required_pages, bool)
+            or not isinstance(required_pages, int)
+            or required_pages < 0
+        ):
+            raise KVInvariantError("required page count must be a non-negative integer")
+        if required_pages > self.available_pages:
+            raise KVCapacityError(
+                required_pages=required_pages,
+                available_pages=self.available_pages,
+            )
+
+    def _copy_page(self, page_id: int) -> int:
+        """Allocate and byte-copy one page across every K/V layer."""
+        self._require_allocated(page_id)
+        copied_page_id = self.alloc_page()
+        try:
+            for cache in (*self.k_cache, *self.v_cache):
+                cache[copied_page_id].copy_(cache[page_id])
+            self._valid_lengths[copied_page_id] = self._valid_lengths[page_id]
+        except Exception:
+            self.free(copied_page_id)
+            raise
+        return copied_page_id
+
+    def _page_length(self, page_id: int) -> int:
+        """Return the number of valid token slots in an allocated page."""
+        self._require_allocated(page_id)
+        return self._valid_lengths[page_id]
+
+    def _set_page_length(self, page_id: int, length: int) -> None:
+        """Set the valid-token length for an allocated page."""
+        self._require_allocated(page_id)
+        if (
+            isinstance(length, bool)
+            or not isinstance(length, int)
+            or length < 0
+            or length > self.config.page_size
+        ):
+            raise KVInvariantError(
+                f"page length must be between 0 and {self.config.page_size}"
+            )
+        self._valid_lengths[page_id] = length
 
     def _validate_page_id(self, page_id: int) -> None:
         if (
