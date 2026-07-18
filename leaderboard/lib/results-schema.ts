@@ -129,7 +129,7 @@ const sampleResultSchema = strictObject({
 
 const engineConfigSchema = strictObject({
   model: z.string(),
-  base_url: z.string().url(),
+  base_url: z.string(),
   mode: z.enum(["sequential", "tree"]),
   budgets: z.array(budgetConfigSchema),
   k_samples: z.number().int().min(1).max(64),
