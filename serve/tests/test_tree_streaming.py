@@ -94,6 +94,7 @@ async def test_chat_tree_stream_exposes_branch_events_as_chunk_extensions(http_c
             "messages": [{"role": "user", "content": "stream branches"}],
             "max_tokens": 3,
             "stream": True,
+            "stream_options": {"include_usage": True},
             "tree": {
                 "policy": "beam",
                 "branches": 3,

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
 import random
 import time
 from collections.abc import AsyncIterator
@@ -41,7 +42,10 @@ class GenerationRequest:
     messages: tuple[Message, ...]
     max_tokens: int
     temperature: float
+    top_p: float
+    stop: tuple[str, ...]
     seed: int | None
+    user: str | None
     tree: TreeExecution | None
 
 
@@ -191,9 +195,13 @@ class DeterministicEngine:
 
         allocations = self._allocate_tokens(total_budget, branch_count)
         branch_tokens = {
-            branch_id: self._sample_tokens(request, branch_id, allocations[index])
+            branch_id: self._apply_stop_sequences(
+                self._sample_tokens(request, branch_id, allocations[index]),
+                request.stop,
+            )
             for index, branch_id in enumerate(branch_ids)
         }
+        allocations = [len(branch_tokens[branch_id]) for branch_id in branch_ids]
         scores = {
             branch_id: self._score_branch(request, branch_id, branch_tokens[branch_id])
             for branch_id in branch_ids
@@ -289,8 +297,23 @@ class DeterministicEngine:
         count: int,
     ) -> list[str]:
         rng = random.Random(self._stable_seed(request, branch_id, "tokens"))
-        words = [rng.choice(self._VOCABULARY) for _ in range(count)]
+        candidate_count = max(1, math.ceil(len(self._VOCABULARY) * request.top_p))
+        vocabulary = self._VOCABULARY[:candidate_count]
+        words = [rng.choice(vocabulary) for _ in range(count)]
         return [word if index == 0 else f" {word}" for index, word in enumerate(words)]
+
+    @staticmethod
+    def _apply_stop_sequences(tokens: list[str], stop: tuple[str, ...]) -> list[str]:
+        if not stop:
+            return tokens
+        text = "".join(tokens)
+        positions = [position for item in stop if (position := text.find(item)) >= 0]
+        if not positions:
+            return tokens
+        truncated = text[: min(positions)]
+        if not truncated:
+            return []
+        return [truncated]
 
     def _score_branch(
         self,
@@ -314,6 +337,7 @@ class DeterministicEngine:
                 "purpose": purpose,
                 "policy": request.tree.policy if request.tree else None,
                 "temperature": request.temperature,
+                "top_p": request.top_p,
             },
             sort_keys=True,
         ).encode("utf-8")

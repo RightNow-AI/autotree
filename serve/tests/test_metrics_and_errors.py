@@ -89,7 +89,7 @@ async def test_unknown_model_fails_without_fallback(http_client):
     assert response.json()["error"]["code"] == "model_not_found"
 
 
-async def test_unsupported_openai_field_fails_instead_of_being_ignored(http_client):
+async def test_n_greater_than_one_fails_honestly(http_client):
     response = await http_client.post(
         "/v1/chat/completions",
         json={
@@ -99,7 +99,29 @@ async def test_unsupported_openai_field_fails_instead_of_being_ignored(http_clie
         },
     )
 
-    assert response.status_code == 422
+    assert response.status_code == 400
     error = response.json()["error"]
-    assert error["code"] == "validation_error"
+    assert error["code"] == "unsupported_feature"
     assert error["param"] == "n"
+
+
+async def test_unimplemented_semantic_field_names_feature_in_400(http_client):
+    response = await http_client.post(
+        "/v1/chat/completions",
+        json={
+            "model": MODEL_ID,
+            "messages": [{"role": "user", "content": "call a tool"}],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {"name": "lookup", "parameters": {"type": "object"}},
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 400
+    error = response.json()["error"]
+    assert error["code"] == "unsupported_feature"
+    assert error["param"] == "tools"
+    assert "tools" in error["message"]

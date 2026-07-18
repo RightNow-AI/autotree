@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -23,17 +23,36 @@ class TreeParameters(BaseModel):
     scorer: str | None = None
 
 
+class StreamOptions(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    include_usage: bool = False
+
+
 class ChatCompletionRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="allow")
 
     model: str = Field(min_length=1)
     messages: list[ChatMessage] = Field(min_length=1)
     stream: bool = False
-    stream_options: dict[str, Any] | None = None
-    max_tokens: int = Field(default=16, ge=1, le=4096)
+    stream_options: StreamOptions | None = None
+    max_completion_tokens: int | None = Field(default=None, ge=1, le=4096)
+    max_tokens: int | None = Field(default=None, ge=1, le=4096)
+    top_p: float = Field(default=1.0, gt=0.0, le=1.0)
     temperature: float = Field(default=1.0, ge=0.0, le=2.0)
+    stop: str | list[str] | None = None
+    n: int = Field(default=1, ge=1)
     seed: int | None = None
+    user: str | None = None
     tree: TreeParameters | None = None
+
+    @property
+    def resolved_max_tokens(self) -> int:
+        if self.max_completion_tokens is not None:
+            return self.max_completion_tokens
+        if self.max_tokens is not None:
+            return self.max_tokens
+        return 16
 
 
 class TreeCompletionRequest(ChatCompletionRequest):

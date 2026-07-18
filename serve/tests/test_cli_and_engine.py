@@ -68,7 +68,10 @@ async def test_deterministic_engine_repeats_seeded_event_stream():
         messages=(Message(role="user", content="repeat this"),),
         max_tokens=5,
         temperature=1.0,
+        top_p=1.0,
+        stop=(),
         seed=123,
+        user=None,
         tree=TreeExecution(
             policy="beam",
             branches=3,
@@ -95,7 +98,10 @@ async def test_tree_winner_has_generated_content_when_budget_is_narrow():
         messages=(Message(role="user", content="use the only generated token"),),
         max_tokens=16,
         temperature=1.0,
+        top_p=1.0,
+        stop=(),
         seed=1,
+        user=None,
         tree=TreeExecution(
             policy="beam",
             branches=4,

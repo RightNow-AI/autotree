@@ -31,6 +31,28 @@ from .metrics import ServeMetrics
 from .schema import ChatCompletionRequest, TreeCompletionRequest
 
 
+_UNSUPPORTED_SEMANTIC_FIELDS = frozenset(
+    {
+        "audio",
+        "frequency_penalty",
+        "function_call",
+        "functions",
+        "logit_bias",
+        "logprobs",
+        "modalities",
+        "parallel_tool_calls",
+        "prediction",
+        "presence_penalty",
+        "reasoning_effort",
+        "response_format",
+        "tool_choice",
+        "tools",
+        "top_logprobs",
+        "web_search_options",
+    }
+)
+
+
 class EngineContractError(RuntimeError):
     """Raised when an engine violates the public event/accounting contract."""
 
@@ -40,6 +62,7 @@ class EventAccumulator:
         self.started: set[str] = set()
         self.terminal: set[str] = set()
         self.tokens: dict[str, list[str]] = {}
+        self.next_token_index: dict[str, int] = {}
         self.token_count = 0
         self.finished = False
 
@@ -49,18 +72,35 @@ class EventAccumulator:
         if isinstance(event, BranchStarted):
             if event.branch_id in self.started:
                 raise EngineContractError(f"branch {event.branch_id} started more than once")
+            if event.parent_id is not None and event.parent_id not in self.started:
+                raise EngineContractError(
+                    f"parent_id {event.parent_id!r} for branch {event.branch_id} "
+                    "does not reference an existing branch"
+                )
             self.started.add(event.branch_id)
             self.tokens[event.branch_id] = []
+            self.next_token_index[event.branch_id] = 0
             return
         if isinstance(event, TokenGenerated):
             if event.branch_id not in self.started:
                 raise EngineContractError(f"token emitted for unknown branch {event.branch_id}")
             if event.branch_id in self.terminal:
                 raise EngineContractError(f"token emitted after branch {event.branch_id} terminated")
+            expected_index = self.next_token_index[event.branch_id]
+            if event.token_index != expected_index:
+                raise EngineContractError(
+                    f"branch {event.branch_id} token_index must be {expected_index}, "
+                    f"got {event.token_index}"
+                )
             self.tokens[event.branch_id].append(event.token)
+            self.next_token_index[event.branch_id] += 1
             self.token_count += 1
             return
-        if isinstance(event, (BranchPruned, BranchMerged)):
+        if isinstance(event, BranchMerged):
+            self._validate_merge_target(event)
+            self._terminate(event.branch_id)
+            return
+        if isinstance(event, BranchPruned):
             self._terminate(event.branch_id)
             return
         if isinstance(event, GenerationDone):
@@ -73,10 +113,35 @@ class EventAccumulator:
                     "completion token usage does not match emitted token events: "
                     f"usage={event.usage.completion_tokens}, events={self.token_count}"
                 )
+            if event.tree_summary is not None:
+                emitted_per_branch = {
+                    branch_id: len(self.tokens[branch_id])
+                    for branch_id in sorted(self.started)
+                }
+                if event.tree_summary.tokens_spent_per_branch != emitted_per_branch:
+                    raise EngineContractError(
+                        "tree summary tokens_spent_per_branch does not match emitted "
+                        f"token events: summary={event.tree_summary.tokens_spent_per_branch}, "
+                        f"events={emitted_per_branch}"
+                    )
             emitted_text = "".join(self.tokens[event.branch_id])
             if emitted_text != event.text:
                 raise EngineContractError("winning text does not match winner token events")
             self.finished = True
+
+    def _validate_merge_target(self, event: BranchMerged) -> None:
+        if event.into_branch_id == event.branch_id:
+            raise EngineContractError(
+                f"into_branch_id {event.into_branch_id!r} cannot be the merged branch itself"
+            )
+        if event.into_branch_id not in self.started:
+            raise EngineContractError(
+                f"into_branch_id {event.into_branch_id!r} does not reference an existing branch"
+            )
+        if event.into_branch_id in self.terminal:
+            raise EngineContractError(
+                f"into_branch_id {event.into_branch_id!r} references a terminated branch"
+            )
 
     def _terminate(self, branch_id: str) -> None:
         if branch_id not in self.started:
@@ -155,13 +220,25 @@ def create_app(
 
     @app.post("/v1/chat/completions")
     async def chat_completions(body: ChatCompletionRequest) -> Response:
+        feature_error = _validate_supported_features(body)
+        if feature_error:
+            return feature_error
         model_error = _validate_model(body.model, selected_engine)
         if model_error:
             return model_error
         request = _to_engine_request(body)
         if body.stream:
             return StreamingResponse(
-                _chat_stream(selected_engine, request, metrics),
+                _chat_stream(
+                    selected_engine,
+                    request,
+                    metrics,
+                    include_usage=(
+                        body.stream_options.include_usage
+                        if body.stream_options is not None
+                        else False
+                    ),
+                ),
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
@@ -170,6 +247,9 @@ def create_app(
 
     @app.post("/v1/tree/completions")
     async def tree_completions(body: TreeCompletionRequest) -> Response:
+        feature_error = _validate_supported_features(body)
+        if feature_error:
+            return feature_error
         model_error = _validate_model(body.model, selected_engine)
         if model_error:
             return model_error
@@ -204,6 +284,29 @@ def _validate_model(model: str, engine: EngineProtocol) -> JSONResponse | None:
     )
 
 
+def _validate_supported_features(body: ChatCompletionRequest) -> JSONResponse | None:
+    if body.n != 1:
+        return _openai_error(
+            status_code=400,
+            message="AutoTree currently supports exactly one completion; 'n' must be 1.",
+            param="n",
+            code="unsupported_feature",
+        )
+    extras = body.model_extra or {}
+    unsupported = next(
+        (name for name in extras if name in _UNSUPPORTED_SEMANTIC_FIELDS),
+        None,
+    )
+    if unsupported is None:
+        return None
+    return _openai_error(
+        status_code=400,
+        message=f"Unsupported chat completion feature: '{unsupported}'.",
+        param=unsupported,
+        code="unsupported_feature",
+    )
+
+
 def _to_engine_request(body: ChatCompletionRequest) -> GenerationRequest:
     tree = None
     if body.tree is not None:
@@ -216,9 +319,12 @@ def _to_engine_request(body: ChatCompletionRequest) -> GenerationRequest:
     return GenerationRequest(
         model=body.model,
         messages=tuple(Message(role=item.role, content=item.content) for item in body.messages),
-        max_tokens=body.max_tokens,
+        max_tokens=body.resolved_max_tokens,
         temperature=body.temperature,
+        top_p=body.top_p,
+        stop=(body.stop,) if isinstance(body.stop, str) else tuple(body.stop or ()),
         seed=body.seed,
+        user=body.user,
         tree=tree,
     )
 
@@ -270,6 +376,8 @@ async def _chat_stream(
     engine: EngineProtocol,
     request: GenerationRequest,
     metrics: ServeMetrics,
+    *,
+    include_usage: bool,
 ) -> AsyncIterator[str]:
     stream_id = f"chatcmpl-{uuid.uuid4().hex}"
     created = int(time.time())
@@ -357,15 +465,16 @@ async def _chat_stream(
         if done is None:
             raise EngineContractError("engine stream ended without a done event")
 
-    yield _sse_data(
-        _chat_chunk(
-            stream_id,
-            created,
-            request.model,
-            choices=[],
-            usage=done.usage.to_dict(),
+    if include_usage:
+        yield _sse_data(
+            _chat_chunk(
+                stream_id,
+                created,
+                request.model,
+                choices=[],
+                usage=done.usage.to_dict(),
+            )
         )
-    )
     yield "data: [DONE]\n\n"
 
 
