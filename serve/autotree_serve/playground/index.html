@@ -621,12 +621,12 @@
       } else if (eventType === "branch_pruned") {
         const branch = requireBranch(payload.branch_id, eventType);
         branch.status = "pruned";
-        branch.reason = `Pruned by engine · score ${scoreLabel(payload.score)}`;
+        branch.reason = `Pruned · ${payload.reason || "engine"}`;
       } else if (eventType === "branch_merged") {
         const branch = requireBranch(payload.branch_id, eventType);
         requireBranch(payload.into_branch_id, eventType);
         branch.status = "merged";
-        branch.reason = `Merged into ${payload.into_branch_id} · score ${scoreLabel(payload.score)}`;
+        branch.reason = `Merged into ${payload.into_branch_id}`;
         state.mergeEdges.push({ from: payload.branch_id, into: payload.into_branch_id });
       } else if (eventType === "done") {
         const winner = requireBranch(payload.branch_id, eventType);

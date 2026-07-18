@@ -17,7 +17,7 @@ from conftest import MODEL_ID
 PLAYGROUND_EVENT_SCHEMA = {
     BranchStarted: {"type", "branch_id", "parent_id"},
     TokenGenerated: {"type", "branch_id", "token", "token_index"},
-    BranchPruned: {"type", "branch_id", "score"},
+    BranchPruned: {"type", "branch_id", "reason"},
     BranchMerged: {"type", "branch_id", "into_branch_id", "score"},
     GenerationDone: {
         "type",
