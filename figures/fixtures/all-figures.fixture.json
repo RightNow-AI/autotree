@@ -1,0 +1,340 @@
+{
+  "schema_version": "autotree.figures.v1",
+  "provenance": {
+    "kind": "fixture",
+    "source": "ThoughtBench deterministic demo outputs plus explicit renderer contract fixtures",
+    "license": "Repository license",
+    "notice": "FIXTURE DATA ONLY - NOT A BENCHMARK RESULT."
+  },
+  "thoughtbench_results": [
+    {
+      "path": "demo-sequential.results.json",
+      "label": "Canonical sequential demo",
+      "panels": []
+    },
+    {
+      "path": "demo-tree.results.json",
+      "label": "Canonical tree demo",
+      "panels": []
+    },
+    {
+      "path": "sweep-sequential.results.json",
+      "label": "Sequential",
+      "panels": [
+        "scaling",
+        "pareto",
+        "throughput"
+      ]
+    },
+    {
+      "path": "sweep-tree.results.json",
+      "label": "AutoTree",
+      "panels": [
+        "scaling",
+        "pareto",
+        "throughput"
+      ]
+    },
+    {
+      "path": "branch-1.results.json",
+      "label": "AutoTree k=1",
+      "panels": [
+        "branching"
+      ]
+    },
+    {
+      "path": "branch-2.results.json",
+      "label": "AutoTree k=2",
+      "panels": [
+        "branching"
+      ]
+    },
+    {
+      "path": "branch-4.results.json",
+      "label": "AutoTree k=4",
+      "panels": [
+        "branching"
+      ]
+    },
+    {
+      "path": "branch-8.results.json",
+      "label": "AutoTree k=8",
+      "panels": [
+        "branching"
+      ]
+    },
+    {
+      "path": "branch-16.results.json",
+      "label": "AutoTree k=16",
+      "panels": [
+        "branching"
+      ]
+    },
+    {
+      "path": "branch-32.results.json",
+      "label": "AutoTree k=32",
+      "panels": [
+        "branching"
+      ]
+    }
+  ],
+  "supplemental": {
+    "kv_reuse_heatmap": {
+      "schema_version": "autotree.kv-reuse-sweep.v1",
+      "provenance": {
+        "kind": "fixture",
+        "source": "Synthetic depth-by-branching renderer contract fixture; not measured",
+        "license": "Repository license",
+        "notice": "FIXTURE DATA ONLY - AWAITING REAL DEPTH x BRANCHING SWEEPS."
+      },
+      "depths": [
+        1,
+        2,
+        4,
+        8,
+        12
+      ],
+      "branching_factors": [
+        1,
+        2,
+        4,
+        8,
+        16,
+        32
+      ],
+      "values": [
+        [
+          0.08,
+          0.12,
+          0.16,
+          0.19,
+          0.21,
+          0.22
+        ],
+        [
+          0.11,
+          0.19,
+          0.28,
+          0.34,
+          0.37,
+          0.39
+        ],
+        [
+          0.14,
+          0.27,
+          0.43,
+          0.55,
+          0.61,
+          0.64
+        ],
+        [
+          0.16,
+          0.31,
+          0.51,
+          0.68,
+          0.76,
+          0.8
+        ],
+        [
+          0.17,
+          0.33,
+          0.55,
+          0.73,
+          0.82,
+          0.86
+        ]
+      ]
+    },
+    "tree_topology": {
+      "schema_version": "autotree.branch-trace.v1",
+      "provenance": {
+        "kind": "fixture",
+        "source": "Synthetic branch-trace renderer contract fixture; not a real AIME solve",
+        "license": "Repository license",
+        "notice": "FIXTURE DATA ONLY - AWAITING REAL BRANCH TRACES."
+      },
+      "title": "Reasoning tree topology - renderer contract fixture",
+      "nodes": [
+        {
+          "id": "root",
+          "parent": null,
+          "value": 0.42,
+          "pruned": false,
+          "label": "prompt"
+        },
+        {
+          "id": "a",
+          "parent": "root",
+          "value": 0.57,
+          "pruned": false,
+          "label": "path A"
+        },
+        {
+          "id": "b",
+          "parent": "root",
+          "value": 0.31,
+          "pruned": true,
+          "label": "path B"
+        },
+        {
+          "id": "c",
+          "parent": "root",
+          "value": 0.49,
+          "pruned": false,
+          "label": "path C"
+        },
+        {
+          "id": "a1",
+          "parent": "a",
+          "value": 0.69,
+          "pruned": false,
+          "label": "A.1"
+        },
+        {
+          "id": "a2",
+          "parent": "a",
+          "value": 0.38,
+          "pruned": true,
+          "label": "A.2"
+        },
+        {
+          "id": "c1",
+          "parent": "c",
+          "value": 0.62,
+          "pruned": false,
+          "label": "C.1"
+        },
+        {
+          "id": "c2",
+          "parent": "c",
+          "value": 0.44,
+          "pruned": true,
+          "label": "C.2"
+        },
+        {
+          "id": "a1x",
+          "parent": "a1",
+          "value": 0.83,
+          "pruned": false,
+          "label": "candidate"
+        },
+        {
+          "id": "c1x",
+          "parent": "c1",
+          "value": 0.71,
+          "pruned": false,
+          "label": "candidate"
+        },
+        {
+          "id": "c1y",
+          "parent": "c1",
+          "value": 0.29,
+          "pruned": true,
+          "label": "pruned"
+        }
+      ]
+    },
+    "thinking_effort": {
+      "schema_version": "autotree.thinking-effort-sweep.v1",
+      "provenance": {
+        "kind": "fixture",
+        "source": "Synthetic Inkling thinking-effort renderer contract fixture; not measured",
+        "license": "Repository license",
+        "notice": "FIXTURE DATA ONLY - AWAITING INKLING RESULTS."
+      },
+      "model": "Inkling (fixture schema)",
+      "series": [
+        {
+          "label": "AutoTree OFF",
+          "points": [
+            {
+              "effort": 0.2,
+              "seed_values": [
+                0.31,
+                0.29,
+                0.3
+              ]
+            },
+            {
+              "effort": 0.4,
+              "seed_values": [
+                0.39,
+                0.41,
+                0.4
+              ]
+            },
+            {
+              "effort": 0.6,
+              "seed_values": [
+                0.46,
+                0.44,
+                0.45
+              ]
+            },
+            {
+              "effort": 0.8,
+              "seed_values": [
+                0.5,
+                0.53,
+                0.51
+              ]
+            },
+            {
+              "effort": 0.99,
+              "seed_values": [
+                0.54,
+                0.56,
+                0.55
+              ]
+            }
+          ]
+        },
+        {
+          "label": "AutoTree ON",
+          "points": [
+            {
+              "effort": 0.2,
+              "seed_values": [
+                0.35,
+                0.36,
+                0.34
+              ]
+            },
+            {
+              "effort": 0.4,
+              "seed_values": [
+                0.46,
+                0.48,
+                0.47
+              ]
+            },
+            {
+              "effort": 0.6,
+              "seed_values": [
+                0.57,
+                0.55,
+                0.56
+              ]
+            },
+            {
+              "effort": 0.8,
+              "seed_values": [
+                0.63,
+                0.66,
+                0.65
+              ]
+            },
+            {
+              "effort": 0.99,
+              "seed_values": [
+                0.69,
+                0.71,
+                0.7
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
