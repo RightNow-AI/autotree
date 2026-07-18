@@ -22,16 +22,37 @@ def test_cli_help_is_honest_about_deterministic_engine(capsys):
     assert "does not serve real model weights" in output
 
 
-def test_treekv_engine_fails_loudly(capsys):
+def test_treekv_engine_model_load_failure_is_honest(capsys, monkeypatch):
+    def fail_load(_model_id):
+        raise OSError("weights unavailable")
+
+    monkeypatch.setattr("autotree_serve.cli._load_treekv_engine", fail_load)
     with pytest.raises(SystemExit) as exc:
         main(["serve", "--model", "demo", "--engine", "treekv"])
 
     assert exc.value.code != 0
     error = capsys.readouterr().err
-    assert "Tree-KV engine integration lands in Phase 2" in error
-    assert "scheduler" in error
-    assert "GPU runtime" in error
-    assert "real-model weight loader" in error
+    assert "Failed to load Tree-KV CPU model 'demo'" in error
+    assert "weights unavailable" in error
+
+
+def test_cli_starts_treekv_server(monkeypatch):
+    called = {}
+    fake_engine = DeterministicEngine("gpt2")
+
+    monkeypatch.setattr(
+        "autotree_serve.cli._load_treekv_engine", lambda model_id: fake_engine
+    )
+    monkeypatch.setattr(
+        "autotree_serve.cli.uvicorn.run",
+        lambda app, *, host, port: called.update(app=app, host=host, port=port),
+    )
+
+    main(["serve", "--engine", "treekv"])
+
+    assert called["app"].state.engine is fake_engine
+    assert called["host"] == "127.0.0.1"
+    assert called["port"] == 8000
 
 
 def test_cli_starts_deterministic_server(monkeypatch):

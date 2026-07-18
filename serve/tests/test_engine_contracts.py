@@ -136,6 +136,36 @@ async def test_tree_summary_branch_token_mismatch_returns_honest_500():
     assert "tokens_spent_per_branch" in error["message"]
 
 
+async def test_tree_summary_final_scores_are_keyed_by_every_branch_id():
+    summary = TreeSummary(
+        policy="beam",
+        branch_count=1,
+        pruned_count=0,
+        merged_count=0,
+        winner_branch_id="branch-0",
+        tokens_spent_per_branch={"branch-0": 1},
+        final_scores={},
+        scorer=None,
+    )
+    response = await post_script(
+        [
+            BranchStarted(branch_id="branch-0", parent_id=None),
+            TokenGenerated(branch_id="branch-0", token="a", token_index=0),
+            done_event(
+                branch_id="branch-0",
+                text="a",
+                completion_tokens=1,
+                tree_summary=summary,
+            ),
+        ]
+    )
+
+    assert response.status_code == 500
+    error = response.json()["error"]
+    assert error["code"] == "engine_contract_error"
+    assert "final_scores" in error["message"]
+
+
 @pytest.mark.parametrize(
     "events, invalid_relationship",
     [

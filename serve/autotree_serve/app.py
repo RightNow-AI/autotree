@@ -61,6 +61,7 @@ class EventAccumulator:
     def __init__(self) -> None:
         self.started: set[str] = set()
         self.terminal: set[str] = set()
+        self.parents: dict[str, str | None] = {}
         self.tokens: dict[str, list[str]] = {}
         self.next_token_index: dict[str, int] = {}
         self.token_count = 0
@@ -78,6 +79,7 @@ class EventAccumulator:
                     "does not reference an existing branch"
                 )
             self.started.add(event.branch_id)
+            self.parents[event.branch_id] = event.parent_id
             self.tokens[event.branch_id] = []
             self.next_token_index[event.branch_id] = 0
             return
@@ -114,6 +116,11 @@ class EventAccumulator:
                     f"usage={event.usage.completion_tokens}, events={self.token_count}"
                 )
             if event.tree_summary is not None:
+                if event.tree_summary.branch_count != len(self.started):
+                    raise EngineContractError(
+                        "tree summary branch_count does not match branch_started events: "
+                        f"summary={event.tree_summary.branch_count}, events={len(self.started)}"
+                    )
                 emitted_per_branch = {
                     branch_id: len(self.tokens[branch_id])
                     for branch_id in sorted(self.started)
@@ -124,10 +131,33 @@ class EventAccumulator:
                         f"token events: summary={event.tree_summary.tokens_spent_per_branch}, "
                         f"events={emitted_per_branch}"
                     )
-            emitted_text = "".join(self.tokens[event.branch_id])
+                score_branches = set(event.tree_summary.final_scores)
+                if score_branches != self.started:
+                    raise EngineContractError(
+                        "tree summary final_scores must be a branch_id-keyed mapping for "
+                        f"every branch: scores={sorted(score_branches)}, "
+                        f"events={sorted(self.started)}"
+                    )
+                if event.tree_summary.winner_branch_id != event.branch_id:
+                    raise EngineContractError(
+                        "tree summary winner_branch_id does not match done branch_id"
+                    )
+            emitted_text = "".join(
+                token
+                for branch_id in self._branch_path(event.branch_id)
+                for token in self.tokens[branch_id]
+            )
             if emitted_text != event.text:
                 raise EngineContractError("winning text does not match winner token events")
             self.finished = True
+
+    def _branch_path(self, branch_id: str) -> tuple[str, ...]:
+        reversed_path: list[str] = []
+        current: str | None = branch_id
+        while current is not None:
+            reversed_path.append(current)
+            current = self.parents[current]
+        return tuple(reversed(reversed_path))
 
     def _validate_merge_target(self, event: BranchMerged) -> None:
         if event.into_branch_id == event.branch_id:
