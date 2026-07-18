@@ -40,11 +40,14 @@ ENV HF_HOME=/home/autotree/.cache/huggingface \
 COPY --from=wheel-builder /wheels /wheels
 
 RUN python -m pip install --no-cache-dir \
+        --index-url https://download.pytorch.org/whl/cpu \
+        torch==2.13.0 \
+    && python -m pip install --no-cache-dir \
         /wheels/autotree_scheduler-*.whl \
         /wheels/autotree_core-*.whl \
         /wheels/autotree_serve-*.whl \
-        "transformers>=4.44" \
-        "safetensors>=0.4" \
+        transformers==5.14.1 \
+        safetensors==0.8.0 \
     && rm -rf /wheels \
     && useradd --create-home --uid 10001 autotree \
     && mkdir -p "${HF_HOME}" \

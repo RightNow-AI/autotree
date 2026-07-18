@@ -1,5 +1,7 @@
 # AutoTree
 
+<!-- markdownlint-disable MD013 -->
+
 AutoTree is an experimental engine for executing LLM reasoning as a tree. It
 shares prefix KV state, forks candidate branches, and lets a Rust scheduler
 prune or continue them under a token budget.
@@ -54,7 +56,7 @@ work.
 ## Packages
 
 | Path | Current responsibility |
-|---|---|
+| --- | --- |
 | `core/autotree_core/kv/` | Device-agnostic paged KV pool, copy-on-write forks, pruning, deduplication, gathers, and accounting |
 | `core/autotree_core/kernels/` | Normative PyTorch tree-attention reference plus an import-guarded Triton decode path |
 | `core/autotree_core/engine/` | CPU model executor and TreeKV engine that connect Hugging Face weights, KV state, and scheduling |
@@ -72,7 +74,7 @@ fit together, see [docs/architecture.md](docs/architecture.md).
 Run the repository's CPU-local verification from PowerShell:
 
 ```powershell
-pwsh -File scripts/verify-local.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/verify-local.ps1
 ```
 
 Add `-Modeling` to that command when you intentionally want the slower model

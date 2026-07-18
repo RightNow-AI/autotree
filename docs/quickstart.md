@@ -1,5 +1,7 @@
 # CPU TreeKV quickstart
 
+<!-- markdownlint-disable MD013 -->
+
 This walkthrough starts AutoTree with real GPT-2 weights on CPU and returns a
 live tree completion. It exercises the current repository implementation; it
 does not demonstrate GPU kernels or establish a speed, cost, or quality claim.

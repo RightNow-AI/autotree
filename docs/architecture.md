@@ -1,11 +1,13 @@
 # Architecture
 
+<!-- markdownlint-disable MD013 -->
+
 AutoTree's current implementation is a CPU-testable vertical slice of the
 larger GPU serving blueprint. The code is split by contracts so GPU execution
 can replace reference paths without changing the tree model or wire surface.
 
 | Component | Location | What exists today |
-|---|---|---|
+| --- | --- | --- |
 | KV state | `core/autotree_core/kv/` | Fixed-size paged K/V storage, copy-on-write branch forks, leaf pruning, full-page content deduplication, gathers, and exact logical/physical accounting |
 | Kernels | `core/autotree_core/kernels/` | Pure-PyTorch reference tree attention and dispatch to an import-guarded Triton decode kernel on supported systems |
 | Scheduler | `scheduler/` | Rust branch tree, beam/best-first/MCTS policies, token budgets, deterministic RNG, pruning commands, and optional PyO3 bindings |
