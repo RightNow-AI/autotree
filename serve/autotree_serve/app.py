@@ -7,6 +7,7 @@ import math
 import time
 import uuid
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -31,6 +32,7 @@ from .engine import (
     TreeExecution,
 )
 from .metrics import ServeMetrics
+from .runner import EngineRunner
 from .schema import ChatCompletionRequest, TreeCompletionRequest
 
 
@@ -265,9 +267,17 @@ def create_app(
     registry: CollectorRegistry | None = None,
 ) -> FastAPI:
     selected_engine = engine or DeterministicEngine(model_id=model_id)
+    engine_runner = EngineRunner(selected_engine)
     metrics = ServeMetrics(registry)
-    app = FastAPI(title="autotree-serve", version="0.1.0")
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        yield
+        await engine_runner.shutdown()
+
+    app = FastAPI(title="autotree-serve", version="0.1.0", lifespan=lifespan)
     app.state.engine = selected_engine
+    app.state.engine_runner = engine_runner
     app.state.metrics = metrics
 
     @app.exception_handler(RequestValidationError)
@@ -358,7 +368,7 @@ def create_app(
         if body.stream:
             return StreamingResponse(
                 _chat_stream(
-                    selected_engine,
+                    engine_runner,
                     request,
                     metrics,
                     include_usage=(
@@ -370,7 +380,7 @@ def create_app(
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
-        _events, done = await _collect_events(selected_engine, request, metrics)
+        _events, done = await _collect_events(engine_runner, request, metrics)
         return JSONResponse(_completion_response(done, body.model))
 
     @app.post("/v1/tree/completions")
@@ -384,11 +394,11 @@ def create_app(
         request = _to_engine_request(body)
         if body.stream:
             return StreamingResponse(
-                _tree_stream(selected_engine, request, metrics),
+                _tree_stream(engine_runner, request, metrics),
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
-        _events, done = await _collect_events(selected_engine, request, metrics)
+        _events, done = await _collect_events(engine_runner, request, metrics)
         return JSONResponse(_completion_response(done, body.model))
 
     @app.get("/metrics")
