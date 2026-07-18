@@ -1,0 +1,123 @@
+use autotree_scheduler::{
+    BiasedOracleScorer, BranchId, Command, EngineEvent, KillReason, MctsConfig, PolicyConfig,
+    Scheduler, SchedulerConfig, encode_command_stream,
+};
+
+fn scripted_mcts(seed: u64) -> Vec<Command> {
+    let scorer = BiasedOracleScorer::new([(BranchId(1), 0.9), (BranchId(2), 0.1)], 0.5).unwrap();
+    let mut scheduler = Scheduler::with_scorer(
+        SchedulerConfig {
+            policy: PolicyConfig::Mcts(MctsConfig {
+                expansion_width: 2,
+                max_depth: 2,
+                exploration_weight: 1.0,
+            }),
+            seed,
+            total_token_budget: 1_000,
+            per_branch_token_budget: 1_000,
+            speculative_kill_margin: None,
+        },
+        Box::new(scorer),
+    )
+    .unwrap();
+
+    scheduler
+        .feed_event(EngineEvent::TokenSampled {
+            branch: BranchId(0),
+            token: 0,
+            logprob: -0.01,
+        })
+        .unwrap();
+    let mut batch = scheduler.poll_commands();
+    let mut stream = batch.clone();
+
+    for token in 1..=128 {
+        let selected = batch
+            .iter()
+            .rev()
+            .find_map(|command| match command {
+                Command::Continue { branch } => Some(*branch),
+                _ => None,
+            })
+            .expect("script follows the branch selected by MCTS");
+        scheduler
+            .feed_event(EngineEvent::TokenSampled {
+                branch: selected,
+                token,
+                logprob: -0.01,
+            })
+            .unwrap();
+        batch = scheduler.poll_commands();
+        stream.extend(batch.iter().cloned());
+    }
+    scheduler.drain().unwrap();
+    stream.extend(scheduler.poll_commands());
+    stream
+}
+
+#[test]
+fn same_seed_and_events_produce_byte_identical_command_streams() {
+    let first = scripted_mcts(0x5EED);
+    let second = scripted_mcts(0x5EED);
+
+    assert_eq!(first, second);
+    assert_eq!(
+        encode_command_stream(&first),
+        encode_command_stream(&second)
+    );
+}
+
+#[test]
+fn command_stream_encoding_has_stable_golden_tags_and_little_endian_fields() {
+    let reasons = [
+        KillReason::BeamPruned,
+        KillReason::SpeculativeKill,
+        KillReason::BranchBudgetExhausted,
+        KillReason::TreeBudgetExhausted,
+        KillReason::Exhausted,
+        KillReason::Drained,
+        KillReason::AncestorReclaimed,
+    ];
+    let mut commands = vec![Command::ForkAt {
+        branch: BranchId(0x0102),
+        width: 0x0304_0506,
+    }];
+    commands.extend(
+        reasons
+            .into_iter()
+            .enumerate()
+            .map(|(index, reason)| Command::Kill {
+                branch: BranchId(0x10 + u64::try_from(index).unwrap()),
+                reason,
+            }),
+    );
+    commands.push(Command::Continue {
+        branch: BranchId(0x20),
+    });
+    commands.push(Command::Finalize {
+        branch: BranchId(0x21),
+    });
+
+    let expected = vec![
+        0x0a, 0, 0, 0, 0, 0, 0, 0, // command count
+        0x00, 0x02, 0x01, 0, 0, 0, 0, 0, 0, 0x06, 0x05, 0x04, 0x03, // fork
+        0x01, 0x10, 0, 0, 0, 0, 0, 0, 0, 0x00, // beam-pruned kill
+        0x01, 0x11, 0, 0, 0, 0, 0, 0, 0, 0x01, // speculative kill
+        0x01, 0x12, 0, 0, 0, 0, 0, 0, 0, 0x02, // branch budget kill
+        0x01, 0x13, 0, 0, 0, 0, 0, 0, 0, 0x03, // tree budget kill
+        0x01, 0x14, 0, 0, 0, 0, 0, 0, 0, 0x04, // exhausted kill
+        0x01, 0x15, 0, 0, 0, 0, 0, 0, 0, 0x05, // drained kill
+        0x01, 0x16, 0, 0, 0, 0, 0, 0, 0, 0x06, // ancestor kill
+        0x02, 0x20, 0, 0, 0, 0, 0, 0, 0, // continue
+        0x03, 0x21, 0, 0, 0, 0, 0, 0, 0, // finalize
+    ];
+    assert_eq!(encode_command_stream(&commands), expected);
+    assert_ne!(
+        encode_command_stream(&[Command::Continue {
+            branch: BranchId(1)
+        }]),
+        encode_command_stream(&[Command::Finalize {
+            branch: BranchId(1)
+        }])
+    );
+}

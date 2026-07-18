@@ -1,0 +1,370 @@
+use autotree_scheduler::{
+    BeamConfig, BestFirstConfig, BranchId, BranchState, BranchTree, Command, EngineEvent,
+    KillReason, LogprobScorer, MctsConfig, Policy, PolicyConfig, Scheduler, SchedulerConfig,
+    SchedulerError,
+};
+use rand::rngs::StdRng;
+
+struct FailingPolicy;
+
+impl Policy for FailingPolicy {
+    fn on_event(
+        &mut self,
+        event: &EngineEvent,
+        tree: &mut BranchTree,
+        _rng: &mut StdRng,
+    ) -> Result<Vec<Command>, SchedulerError> {
+        tree.kill(event.branch(), KillReason::Drained)?;
+        Err(SchedulerError::InvalidConfig("intentional policy failure"))
+    }
+}
+
+fn config(
+    total_token_budget: u64,
+    per_branch_token_budget: u64,
+    speculative_kill_margin: Option<f64>,
+) -> SchedulerConfig {
+    SchedulerConfig {
+        policy: PolicyConfig::Beam(BeamConfig {
+            width: 2,
+            fork_width: 2,
+            fork_at_tokens: Vec::new(),
+        }),
+        seed: 11,
+        total_token_budget,
+        per_branch_token_budget,
+        speculative_kill_margin,
+    }
+}
+
+#[test]
+fn per_branch_budget_terminalizes_on_the_exact_limit() {
+    let mut scheduler = Scheduler::new(config(100, 3, None)).unwrap();
+    let root = BranchId(0);
+
+    for token in 0..3 {
+        scheduler
+            .feed_event(EngineEvent::TokenSampled {
+                branch: root,
+                token,
+                logprob: -0.1,
+            })
+            .unwrap();
+    }
+
+    let limit_plus_one = scheduler.feed_event(EngineEvent::TokenSampled {
+        branch: root,
+        token: 99,
+        logprob: -0.1,
+    });
+    let commands = scheduler.poll_commands();
+    assert!(
+        limit_plus_one.is_err(),
+        "the budget controller accepted token limit+1"
+    );
+    assert!(commands.contains(&Command::Finalize { branch: root }));
+    assert_eq!(scheduler.budget().total_consumed(), 3);
+    assert_eq!(scheduler.tree().get(root).unwrap().tokens_generated(), 3);
+    assert_eq!(
+        scheduler.tree().get(root).unwrap().state(),
+        BranchState::Finalized
+    );
+    assert_eq!(scheduler.budget().total_consumed(), 3);
+}
+
+#[test]
+fn speculative_kill_is_emitted_immediately_when_frontier_gap_crosses_margin() {
+    let mut scheduler = Scheduler::with_external_values(SchedulerConfig {
+        policy: PolicyConfig::Beam(BeamConfig {
+            width: 2,
+            fork_width: 2,
+            fork_at_tokens: vec![1],
+        }),
+        ..config(100, 100, Some(0.5))
+    })
+    .unwrap();
+
+    scheduler
+        .feed_event(EngineEvent::TokenSampled {
+            branch: BranchId(0),
+            token: 7,
+            logprob: -0.1,
+        })
+        .unwrap();
+    let _ = scheduler.poll_commands();
+
+    scheduler
+        .feed_event(EngineEvent::ValueScored {
+            branch: BranchId(0),
+            score: 0.0,
+        })
+        .unwrap();
+    let _ = scheduler.poll_commands();
+
+    scheduler
+        .feed_event(EngineEvent::TokenSampled {
+            branch: BranchId(1),
+            token: 8,
+            logprob: -0.1,
+        })
+        .unwrap();
+    let _ = scheduler.poll_commands();
+    scheduler
+        .feed_event(EngineEvent::ValueScored {
+            branch: BranchId(1),
+            score: 1.0,
+        })
+        .unwrap();
+    let _ = scheduler.poll_commands();
+    scheduler
+        .feed_event(EngineEvent::TokenSampled {
+            branch: BranchId(2),
+            token: 9,
+            logprob: -0.1,
+        })
+        .unwrap();
+    let _ = scheduler.poll_commands();
+    scheduler
+        .feed_event(EngineEvent::ValueScored {
+            branch: BranchId(2),
+            score: 0.4,
+        })
+        .unwrap();
+
+    assert_eq!(
+        scheduler.poll_commands(),
+        vec![Command::Kill {
+            branch: BranchId(2),
+            reason: KillReason::SpeculativeKill,
+        }]
+    );
+    assert_eq!(
+        scheduler.tree().get(BranchId(2)).unwrap().state(),
+        BranchState::Killed
+    );
+}
+
+#[test]
+fn invalid_numeric_events_are_rejected_without_spending_budget() {
+    let mut scheduler = Scheduler::new(config(10, 10, None)).unwrap();
+    assert!(
+        scheduler
+            .feed_event(EngineEvent::TokenSampled {
+                branch: BranchId(0),
+                token: 0,
+                logprob: f64::NAN,
+            })
+            .is_err()
+    );
+    assert_eq!(scheduler.budget().total_consumed(), 0);
+}
+
+#[test]
+fn batched_poll_drops_stale_and_duplicate_continue_commands() {
+    let mut scheduler = Scheduler::with_external_values(SchedulerConfig {
+        policy: PolicyConfig::Beam(BeamConfig {
+            width: 2,
+            fork_width: 2,
+            fork_at_tokens: vec![1],
+        }),
+        ..config(100, 100, Some(0.5))
+    })
+    .unwrap();
+
+    scheduler
+        .feed_event(EngineEvent::TokenSampled {
+            branch: BranchId(0),
+            token: 0,
+            logprob: 0.0,
+        })
+        .unwrap();
+    let _ = scheduler.poll_commands();
+    scheduler
+        .feed_event(EngineEvent::ValueScored {
+            branch: BranchId(0),
+            score: 0.0,
+        })
+        .unwrap();
+    let _ = scheduler.poll_commands();
+
+    scheduler
+        .feed_event(EngineEvent::TokenSampled {
+            branch: BranchId(1),
+            token: 1,
+            logprob: -0.1,
+        })
+        .unwrap();
+    let _ = scheduler.poll_commands();
+    scheduler
+        .feed_event(EngineEvent::ValueScored {
+            branch: BranchId(1),
+            score: 1.0,
+        })
+        .unwrap();
+    scheduler
+        .feed_event(EngineEvent::TokenSampled {
+            branch: BranchId(2),
+            token: 2,
+            logprob: -0.1,
+        })
+        .unwrap();
+    scheduler
+        .feed_event(EngineEvent::ValueScored {
+            branch: BranchId(2),
+            score: 0.0,
+        })
+        .unwrap();
+
+    let commands = scheduler.poll_commands();
+    assert!(!commands.contains(&Command::Continue {
+        branch: BranchId(2),
+    }));
+    assert_eq!(
+        commands
+            .iter()
+            .filter(|command| **command
+                == Command::Continue {
+                    branch: BranchId(1)
+                })
+            .count(),
+        1
+    );
+    assert!(commands.contains(&Command::Kill {
+        branch: BranchId(2),
+        reason: KillReason::SpeculativeKill,
+    }));
+}
+
+#[test]
+fn continue_authorizations_never_exceed_remaining_tree_budget() {
+    let mut scheduler = Scheduler::new(SchedulerConfig {
+        policy: PolicyConfig::Beam(BeamConfig {
+            width: 8,
+            fork_width: 8,
+            fork_at_tokens: vec![1],
+        }),
+        ..config(2, 10, None)
+    })
+    .unwrap();
+
+    scheduler
+        .feed_event(EngineEvent::TokenSampled {
+            branch: BranchId(0),
+            token: 0,
+            logprob: 0.0,
+        })
+        .unwrap();
+    let commands = scheduler.poll_commands();
+    let authorized: Vec<_> = commands
+        .iter()
+        .filter_map(|command| match command {
+            Command::Continue { branch } => Some(*branch),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(authorized.len(), 1);
+
+    scheduler
+        .feed_event(EngineEvent::TokenSampled {
+            branch: authorized[0],
+            token: 1,
+            logprob: 0.0,
+        })
+        .expect("every authorized continuation fits within the hard budget");
+    assert_eq!(scheduler.budget().total_consumed(), 2);
+}
+
+#[test]
+fn pathological_branch_widths_are_rejected_before_allocation() {
+    let policies = [
+        PolicyConfig::Beam(BeamConfig {
+            width: 1,
+            fork_width: u32::MAX,
+            fork_at_tokens: vec![1],
+        }),
+        PolicyConfig::BestFirst(BestFirstConfig {
+            expansion_width: u32::MAX,
+            max_depth: 1,
+        }),
+        PolicyConfig::Mcts(MctsConfig {
+            expansion_width: u32::MAX,
+            max_depth: 1,
+            exploration_weight: 1.0,
+        }),
+    ];
+
+    for policy in policies {
+        assert!(
+            Scheduler::new(SchedulerConfig {
+                policy,
+                ..config(100, 100, None)
+            })
+            .is_err()
+        );
+    }
+}
+
+#[test]
+fn failed_policy_decision_rolls_back_core_state_atomically() {
+    let mut scheduler = Scheduler::with_components(
+        config(100, 100, None),
+        Box::new(FailingPolicy),
+        Box::new(LogprobScorer),
+    )
+    .unwrap();
+
+    assert!(
+        scheduler
+            .feed_event(EngineEvent::TokenSampled {
+                branch: BranchId(0),
+                token: 0,
+                logprob: -0.1,
+            })
+            .is_err()
+    );
+    let root = scheduler.tree().get(BranchId(0)).unwrap();
+    assert_eq!(root.state(), BranchState::Active);
+    assert_eq!(root.tokens_generated(), 0);
+    assert_eq!(scheduler.budget().total_consumed(), 0);
+    assert!(scheduler.poll_commands().is_empty());
+}
+
+#[test]
+fn external_score_for_the_limit_token_arrives_before_terminalization() {
+    let mut scheduler = Scheduler::with_external_values(SchedulerConfig {
+        policy: PolicyConfig::Beam(BeamConfig {
+            width: 1,
+            fork_width: 1,
+            fork_at_tokens: Vec::new(),
+        }),
+        ..config(1, 1, None)
+    })
+    .unwrap();
+
+    scheduler
+        .feed_event(EngineEvent::TokenSampled {
+            branch: BranchId(0),
+            token: 0,
+            logprob: -0.1,
+        })
+        .unwrap();
+    assert!(scheduler.poll_commands().is_empty());
+    assert_eq!(
+        scheduler.tree().get(BranchId(0)).unwrap().state(),
+        BranchState::Active
+    );
+    assert_eq!(scheduler.budget().total_consumed(), 1);
+
+    scheduler
+        .feed_event(EngineEvent::ValueScored {
+            branch: BranchId(0),
+            score: 0.9,
+        })
+        .unwrap();
+    assert_eq!(
+        scheduler.poll_commands(),
+        vec![Command::Finalize {
+            branch: BranchId(0),
+        }]
+    );
+}
