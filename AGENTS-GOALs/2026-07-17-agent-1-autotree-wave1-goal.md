@@ -128,6 +128,8 @@ rerun; then engine-integration lane (scheduler PyO3 + ModelExecutor + serve
 EngineProtocol = real `--engine treekv`); then GPU box (AUTOTREE-002) for
 parity at 8B and Triton validation; remote (AUTOTREE-001) lights up CI.
 
+## WAVE 2 MERGED 2026-07-18 ~18:05: main `5397a2e` (5-branch train, zero conflicts; post-merge verify-local incl modeling ALL PASS + sdk 18/18). Wave 3 launched: engine-integration lane running (feat/treekv-engine, owns core engine + serve wiring + final_scores fix); thoughtbench lane queued on capacity (feat/thoughtbench, fixture-only harness). Then: core-review rerun, GPU box (AUTOTREE-002) for 8B parity + Triton, remote (AUTOTREE-001) for CI.
+
 ## Next session
 
 Read this file, check the four job ids, gate each lane's diff (companion
