@@ -41,14 +41,14 @@ run_gate() {
   fi
 }
 
-core_venv() { (cd "$repo_root/core" && uv venv --python 3.12); }
+core_venv() { (cd "$repo_root/core" && uv venv --python 3.12 --clear); }
 core_install() { (cd "$repo_root/core" && uv pip install -e '.[dev]'); }
 core_tests() { (cd "$repo_root/core" && uv run --no-sync pytest -q tests/kv tests/kernels); }
 scheduler_fmt() { (cd "$repo_root/scheduler" && cargo fmt --check); }
 scheduler_clippy() { (cd "$repo_root/scheduler" && cargo clippy --all-targets -- -D warnings); }
 scheduler_test() { (cd "$repo_root/scheduler" && cargo test); }
 scheduler_python() { (cd "$repo_root/scheduler" && cargo check --features python); }
-serve_venv() { (cd "$repo_root/serve" && uv venv --python 3.12); }
+serve_venv() { (cd "$repo_root/serve" && uv venv --python 3.12 --clear); }
 serve_install() { (cd "$repo_root/serve" && uv pip install -e '.[dev]'); }
 serve_tests() { (cd "$repo_root/serve" && uv run --no-sync pytest -q); }
 yaml_parse() {

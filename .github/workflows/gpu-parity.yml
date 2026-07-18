@@ -25,7 +25,7 @@ jobs:
           cache-dependency-glob: core/uv.lock
       - name: Create Python 3.12 environment
         working-directory: core
-        run: uv venv --python 3.12
+        run: uv venv --python 3.12 --clear
       - name: Install core development and Triton dependencies
         working-directory: core
         run: uv pip install -e ".[dev,triton]"

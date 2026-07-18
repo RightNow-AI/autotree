@@ -52,7 +52,7 @@ Push-Location $repoRoot
 try {
     Invoke-Gate "core: create Python 3.12 env" {
         Push-Location core
-        try { Invoke-Native uv venv --python 3.12 }
+        try { Invoke-Native uv venv --python 3.12 --clear }
         finally { Pop-Location }
     }
     Invoke-Gate "core: install dev dependencies" {
@@ -89,7 +89,7 @@ try {
     if (Test-Path -LiteralPath (Join-Path $repoRoot "serve")) {
         Invoke-Gate "serve: create Python 3.12 env" {
             Push-Location serve
-            try { Invoke-Native uv venv --python 3.12 }
+            try { Invoke-Native uv venv --python 3.12 --clear }
             finally { Pop-Location }
         }
         Invoke-Gate "serve: install dev dependencies" {

@@ -28,7 +28,7 @@ jobs:
           cache-dependency-glob: core/uv.lock
       - name: Create Python 3.12 environment
         working-directory: core
-        run: uv venv --python 3.12
+        run: uv venv --python 3.12 --clear
       - name: Install core development dependencies
         working-directory: core
         run: uv pip install -e ".[dev]"
@@ -89,7 +89,7 @@ jobs:
       - name: Create Python 3.12 environment
         if: steps.serve.outputs.present == 'true'
         working-directory: serve
-        run: uv venv --python 3.12
+        run: uv venv --python 3.12 --clear
       - name: Install serve development dependencies
         if: steps.serve.outputs.present == 'true'
         working-directory: serve
@@ -111,7 +111,7 @@ jobs:
           cache-dependency-glob: core/uv.lock
       - name: Create Python 3.12 environment
         working-directory: core
-        run: uv venv --python 3.12
+        run: uv venv --python 3.12 --clear
       - name: Install core modeling dependencies
         working-directory: core
         run: uv pip install -e ".[dev,modeling]"
