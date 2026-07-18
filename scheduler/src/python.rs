@@ -5,8 +5,8 @@ use pyo3::{
 };
 
 use crate::{
-    BeamConfig, BestFirstConfig, BranchId, Command, EngineEvent, MctsConfig, PolicyConfig,
-    Scheduler as CoreScheduler, SchedulerConfig, SchedulerError,
+    BeamConfig, BestFirstConfig, BranchId, Command, DEFAULT_MAX_PENDING_EVENTS, EngineEvent,
+    MctsConfig, PolicyConfig, Scheduler as CoreScheduler, SchedulerConfig, SchedulerError,
 };
 
 #[pyclass(name = "Scheduler")]
@@ -60,9 +60,16 @@ impl PyScheduler {
             speculative_kill_margin: optional_nullable_f64(config, "speculative_kill_margin")?,
         };
         let scorer = optional_string(config, "scorer", "logprob")?;
+        let max_pending_events =
+            optional_u64(config, "max_pending_events", DEFAULT_MAX_PENDING_EVENTS)?;
         let inner = match scorer.as_str() {
             "logprob" => CoreScheduler::new(scheduler_config),
-            "external" | "value_head" => CoreScheduler::with_external_values(scheduler_config),
+            "external" | "value_head" => {
+                CoreScheduler::with_external_values_and_pending_event_budget(
+                    scheduler_config,
+                    max_pending_events,
+                )
+            }
             _ => {
                 return Err(PyValueError::new_err(
                     "scorer must be 'logprob', 'external', or 'value_head'",
@@ -77,11 +84,12 @@ impl PyScheduler {
         let event_type: String = required_item(event, "type")?.extract()?;
         let branch = BranchId(required_item(event, "branch")?.extract()?);
         let parsed = match event_type.as_str() {
-            "token_sampled" => EngineEvent::TokenSampled {
+            "token_sampled" => EngineEvent::token_sampled_with_eos(
                 branch,
-                token: required_item(event, "token")?.extract()?,
-                logprob: required_item(event, "logprob")?.extract()?,
-            },
+                required_item(event, "token")?.extract()?,
+                required_item(event, "logprob")?.extract()?,
+                optional_bool(event, "eos", false)?,
+            ),
             "branch_exhausted" => EngineEvent::BranchExhausted { branch },
             "value_scored" => EngineEvent::ValueScored {
                 branch,
@@ -145,6 +153,12 @@ fn optional_u64(dictionary: &Bound<'_, PyDict>, key: &str, default: u64) -> PyRe
 }
 
 fn optional_u32(dictionary: &Bound<'_, PyDict>, key: &str, default: u32) -> PyResult<u32> {
+    dictionary
+        .get_item(key)?
+        .map_or(Ok(default), |value| value.extract())
+}
+
+fn optional_bool(dictionary: &Bound<'_, PyDict>, key: &str, default: bool) -> PyResult<bool> {
     dictionary
         .get_item(key)?
         .map_or(Ok(default), |value| value.extract())
@@ -214,6 +228,51 @@ mod tests {
 
             scheduler.drain().unwrap();
             assert_eq!(scheduler.poll_commands(py).unwrap().bind(py).len(), 3);
+        });
+    }
+
+    #[test]
+    fn python_token_sampled_eos_finalizes_without_forking() {
+        Python::initialize();
+        Python::attach(|py| {
+            let config = PyDict::new(py);
+            config.set_item("policy", "beam").unwrap();
+            config.set_item("branches", 2).unwrap();
+            config.set_item("fork_width", 2).unwrap();
+            config.set_item("fork_at_tokens", vec![1_u64]).unwrap();
+            config.set_item("budget_tokens", 100).unwrap();
+            let mut scheduler = PyScheduler::new(&config).unwrap();
+
+            let event = PyDict::new(py);
+            event.set_item("type", "token_sampled").unwrap();
+            event.set_item("branch", 0).unwrap();
+            event.set_item("token", 7).unwrap();
+            event.set_item("logprob", -0.1).unwrap();
+            event.set_item("eos", true).unwrap();
+            scheduler.feed_event(&event).unwrap();
+
+            let commands = scheduler.poll_commands(py).unwrap();
+            let commands = commands.bind(py);
+            assert_eq!(commands.len(), 1);
+            let command = commands.get_item(0).unwrap().cast_into::<PyDict>().unwrap();
+            assert_eq!(
+                command
+                    .get_item("type")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "finalize"
+            );
+            assert_eq!(
+                command
+                    .get_item("branch")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<u64>()
+                    .unwrap(),
+                0
+            );
         });
     }
 

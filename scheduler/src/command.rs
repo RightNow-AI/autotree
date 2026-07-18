@@ -8,6 +8,16 @@ pub enum EngineEvent {
         token: u32,
         logprob: f64,
     },
+    /// Source-compatible EOS extension for `TokenSampled`.
+    ///
+    /// Existing Rust callers can keep constructing `TokenSampled`; new callers should use
+    /// [`EngineEvent::token_sampled_with_eos`], which maps `eos: false` to the original variant.
+    TokenSampledWithEos {
+        branch: BranchId,
+        token: u32,
+        logprob: f64,
+        eos: bool,
+    },
     BranchExhausted {
         branch: BranchId,
     },
@@ -19,12 +29,49 @@ pub enum EngineEvent {
 
 impl EngineEvent {
     #[must_use]
+    pub const fn token_sampled_with_eos(
+        branch: BranchId,
+        token: u32,
+        logprob: f64,
+        eos: bool,
+    ) -> Self {
+        if eos {
+            Self::TokenSampledWithEos {
+                branch,
+                token,
+                logprob,
+                eos,
+            }
+        } else {
+            Self::TokenSampled {
+                branch,
+                token,
+                logprob,
+            }
+        }
+    }
+
+    #[must_use]
     pub const fn branch(&self) -> BranchId {
         match self {
             Self::TokenSampled { branch, .. }
+            | Self::TokenSampledWithEos { branch, .. }
             | Self::BranchExhausted { branch }
             | Self::ValueScored { branch, .. } => *branch,
         }
+    }
+
+    #[must_use]
+    pub const fn is_token_sampled(&self) -> bool {
+        matches!(
+            self,
+            Self::TokenSampled { .. } | Self::TokenSampledWithEos { .. }
+        )
+    }
+
+    #[must_use]
+    pub const fn is_eos(&self) -> bool {
+        matches!(self, Self::TokenSampledWithEos { eos: true, .. })
     }
 }
 

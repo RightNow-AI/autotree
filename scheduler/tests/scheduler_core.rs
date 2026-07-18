@@ -464,3 +464,169 @@ fn external_score_for_the_limit_token_arrives_before_terminalization() {
         }]
     );
 }
+
+#[test]
+fn tree_termination_prefers_scored_branches_over_unscored_logprob_proxies() {
+    let mut scheduler = Scheduler::with_external_values(SchedulerConfig {
+        policy: PolicyConfig::Beam(BeamConfig {
+            width: 2,
+            fork_width: 2,
+            fork_at_tokens: vec![1],
+        }),
+        ..config(100, 100, None)
+    })
+    .unwrap();
+
+    scheduler
+        .feed_event(EngineEvent::TokenSampled {
+            branch: BranchId(0),
+            token: 0,
+            logprob: 0.0,
+        })
+        .unwrap();
+    let _ = scheduler.poll_commands();
+    scheduler
+        .feed_event(EngineEvent::ValueScored {
+            branch: BranchId(0),
+            score: 0.0,
+        })
+        .unwrap();
+    let _ = scheduler.poll_commands();
+
+    scheduler
+        .feed_event(EngineEvent::TokenSampled {
+            branch: BranchId(1),
+            token: 1,
+            logprob: -0.1,
+        })
+        .unwrap();
+    scheduler
+        .feed_event(EngineEvent::TokenSampled {
+            branch: BranchId(2),
+            token: 2,
+            logprob: -10.0,
+        })
+        .unwrap();
+    scheduler
+        .feed_event(EngineEvent::ValueScored {
+            branch: BranchId(2),
+            score: -100.0,
+        })
+        .unwrap();
+    let _ = scheduler.poll_commands();
+
+    scheduler.drain().unwrap();
+    let commands = scheduler.poll_commands();
+    assert!(commands.contains(&Command::Finalize {
+        branch: BranchId(2),
+    }));
+    assert!(commands.contains(&Command::Kill {
+        branch: BranchId(1),
+        reason: KillReason::Drained,
+    }));
+}
+
+#[test]
+fn eos_token_finalizes_without_policy_fork_or_continue() {
+    let mut scheduler = Scheduler::with_external_values(SchedulerConfig {
+        policy: PolicyConfig::Beam(BeamConfig {
+            width: 2,
+            fork_width: 2,
+            fork_at_tokens: vec![1],
+        }),
+        ..config(100, 100, None)
+    })
+    .unwrap();
+
+    scheduler
+        .feed_event(EngineEvent::token_sampled_with_eos(
+            BranchId(0),
+            42,
+            -0.25,
+            true,
+        ))
+        .unwrap();
+
+    assert_eq!(
+        scheduler.poll_commands(),
+        vec![Command::Finalize {
+            branch: BranchId(0),
+        }]
+    );
+    assert_eq!(
+        scheduler.tree().get(BranchId(0)).unwrap().state(),
+        BranchState::Finalized
+    );
+    assert_eq!(scheduler.budget().total_consumed(), 1);
+    assert_eq!(
+        scheduler.feed_event(EngineEvent::ValueScored {
+            branch: BranchId(0),
+            score: 1.0,
+        }),
+        Err(SchedulerError::BranchNotActive(BranchId(0)))
+    );
+}
+
+#[test]
+fn pending_external_score_uses_logprob_proxy_after_event_budget() {
+    let mut scheduler = Scheduler::with_external_values_and_pending_event_budget(
+        SchedulerConfig {
+            policy: PolicyConfig::Beam(BeamConfig {
+                width: 2,
+                fork_width: 2,
+                fork_at_tokens: vec![1],
+            }),
+            ..config(100, 100, None)
+        },
+        2,
+    )
+    .unwrap();
+
+    scheduler
+        .feed_event(EngineEvent::TokenSampled {
+            branch: BranchId(0),
+            token: 0,
+            logprob: 0.0,
+        })
+        .unwrap();
+    let _ = scheduler.poll_commands();
+    scheduler
+        .feed_event(EngineEvent::ValueScored {
+            branch: BranchId(0),
+            score: 0.0,
+        })
+        .unwrap();
+    let _ = scheduler.poll_commands();
+
+    scheduler
+        .feed_event(EngineEvent::TokenSampled {
+            branch: BranchId(1),
+            token: 1,
+            logprob: -0.25,
+        })
+        .unwrap();
+    scheduler
+        .feed_event(EngineEvent::TokenSampled {
+            branch: BranchId(2),
+            token: 2,
+            logprob: -0.5,
+        })
+        .unwrap();
+    scheduler
+        .feed_event(EngineEvent::ValueScored {
+            branch: BranchId(2),
+            score: 0.75,
+        })
+        .unwrap();
+
+    let timed_out = scheduler.tree().get(BranchId(1)).unwrap();
+    assert!(timed_out.has_value());
+    assert_eq!(timed_out.value_estimate(), timed_out.cumulative_logprob());
+    scheduler
+        .feed_event(EngineEvent::TokenSampled {
+            branch: BranchId(1),
+            token: 3,
+            logprob: -0.25,
+        })
+        .expect("the deterministic fallback must unblock the branch");
+}

@@ -55,7 +55,7 @@ impl Policy for BeamPolicy {
     ) -> Result<Vec<Command>, SchedulerError> {
         let mut commands = Vec::new();
         let mut forked = false;
-        if matches!(event, EngineEvent::TokenSampled { .. }) {
+        if event.is_token_sampled() {
             let frontier = tree.active_frontier();
             let common_tokens = frontier.first().and_then(|first| {
                 let tokens = tree.get(*first)?.tokens_generated();

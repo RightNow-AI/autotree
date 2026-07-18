@@ -18,6 +18,6 @@ pub use policies::{BeamPolicy, BestFirstPolicy, MctsPolicy};
 pub use policy::{BeamConfig, BestFirstConfig, MctsConfig, Policy, PolicyConfig, PolicyRng};
 #[cfg(feature = "python")]
 pub use python::PyScheduler;
-pub use scheduler::{Scheduler, SchedulerConfig};
+pub use scheduler::{DEFAULT_MAX_PENDING_EVENTS, Scheduler, SchedulerConfig};
 pub use scorer::{BiasedOracleScorer, LogprobScorer, ValueScorer};
 pub use types::{BranchId, BranchNode, BranchState, BranchTree, KillReason, MAX_BRANCH_WIDTH};
