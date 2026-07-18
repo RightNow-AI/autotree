@@ -290,6 +290,21 @@ impl Scheduler {
         self.command_queue.drain(..).collect()
     }
 
+    #[cfg(any(feature = "python", test))]
+    pub(crate) const fn pending_commands(&self) -> &VecDeque<Command> {
+        &self.command_queue
+    }
+
+    #[cfg(any(feature = "python", test))]
+    pub(crate) fn try_convert_pending_commands<T, E>(
+        &mut self,
+        convert: impl FnOnce(&VecDeque<Command>) -> Result<T, E>,
+    ) -> Result<T, E> {
+        let output = convert(self.pending_commands())?;
+        self.command_queue.clear();
+        Ok(output)
+    }
+
     pub fn drain(&mut self) -> Result<(), SchedulerError> {
         let commands = self.terminate_tree(KillReason::Drained)?;
         self.outstanding_continuations.clear();
@@ -499,5 +514,45 @@ impl Scheduler {
             }
         }
         Ok(commands)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::BeamConfig;
+
+    #[test]
+    fn failed_command_conversion_leaves_the_queue_untouched() {
+        let mut scheduler = Scheduler::new(SchedulerConfig {
+            policy: PolicyConfig::Beam(BeamConfig {
+                width: 1,
+                fork_width: 1,
+                fork_at_tokens: Vec::new(),
+            }),
+            seed: 0,
+            total_token_budget: 10,
+            per_branch_token_budget: 10,
+            speculative_kill_margin: None,
+        })
+        .unwrap();
+        scheduler
+            .feed_event(EngineEvent::TokenSampled {
+                branch: BranchId(0),
+                token: 0,
+                logprob: 0.0,
+            })
+            .unwrap();
+
+        let result: Result<(), &str> = scheduler
+            .try_convert_pending_commands(|_| Err("injected allocation failure"));
+
+        assert_eq!(result, Err("injected allocation failure"));
+        assert_eq!(
+            scheduler.poll_commands(),
+            vec![Command::Continue {
+                branch: BranchId(0),
+            }]
+        );
     }
 }

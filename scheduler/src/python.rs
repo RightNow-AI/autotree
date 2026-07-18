@@ -97,32 +97,34 @@ impl PyScheduler {
     }
 
     fn poll_commands(&mut self, py: Python<'_>) -> PyResult<Py<PyList>> {
-        let output = PyList::empty(py);
-        for command in self.inner.poll_commands() {
-            let item = PyDict::new(py);
-            match command {
-                Command::ForkAt { branch, width } => {
-                    item.set_item("type", "fork_at")?;
-                    item.set_item("branch", branch.0)?;
-                    item.set_item("width", width)?;
+        self.inner.try_convert_pending_commands(|commands| {
+            let output = PyList::empty(py);
+            for command in commands {
+                let item = PyDict::new(py);
+                match command {
+                    Command::ForkAt { branch, width } => {
+                        item.set_item("type", "fork_at")?;
+                        item.set_item("branch", branch.0)?;
+                        item.set_item("width", width)?;
+                    }
+                    Command::Kill { branch, reason } => {
+                        item.set_item("type", "kill")?;
+                        item.set_item("branch", branch.0)?;
+                        item.set_item("reason", reason.as_str())?;
+                    }
+                    Command::Continue { branch } => {
+                        item.set_item("type", "continue")?;
+                        item.set_item("branch", branch.0)?;
+                    }
+                    Command::Finalize { branch } => {
+                        item.set_item("type", "finalize")?;
+                        item.set_item("branch", branch.0)?;
+                    }
                 }
-                Command::Kill { branch, reason } => {
-                    item.set_item("type", "kill")?;
-                    item.set_item("branch", branch.0)?;
-                    item.set_item("reason", reason.as_str())?;
-                }
-                Command::Continue { branch } => {
-                    item.set_item("type", "continue")?;
-                    item.set_item("branch", branch.0)?;
-                }
-                Command::Finalize { branch } => {
-                    item.set_item("type", "finalize")?;
-                    item.set_item("branch", branch.0)?;
-                }
+                output.append(item)?;
             }
-            output.append(item)?;
-        }
-        Ok(output.unbind())
+            Ok(output.unbind())
+        })
     }
 
     fn drain(&mut self) -> PyResult<()> {
@@ -212,6 +214,35 @@ mod tests {
 
             scheduler.drain().unwrap();
             assert_eq!(scheduler.poll_commands(py).unwrap().bind(py).len(), 3);
+        });
+    }
+
+    #[test]
+    fn conversion_failure_leaves_the_rust_command_queue_untouched() {
+        Python::initialize();
+        Python::attach(|py| {
+            let config = PyDict::new(py);
+            config.set_item("policy", "beam").unwrap();
+            config.set_item("branches", 2).unwrap();
+            config.set_item("fork_width", 2).unwrap();
+            config.set_item("fork_at_tokens", vec![1_u64]).unwrap();
+            config.set_item("budget_tokens", 100).unwrap();
+            let mut scheduler = PyScheduler::new(&config).unwrap();
+
+            let event = PyDict::new(py);
+            event.set_item("type", "token_sampled").unwrap();
+            event.set_item("branch", 0).unwrap();
+            event.set_item("token", 7).unwrap();
+            event.set_item("logprob", -0.1).unwrap();
+            scheduler.feed_event(&event).unwrap();
+
+            let result: PyResult<()> = scheduler.inner.try_convert_pending_commands(|_| {
+                Err(pyo3::exceptions::PyMemoryError::new_err(
+                    "injected allocation failure",
+                ))
+            });
+            assert!(result.is_err());
+            assert_eq!(scheduler.inner.poll_commands().len(), 3);
         });
     }
 }
