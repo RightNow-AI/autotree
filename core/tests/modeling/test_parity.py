@@ -1,10 +1,44 @@
 from __future__ import annotations
 
 from collections import Counter
+from typing import Any
 
 import torch
 
 from .conftest import ModelCase
+
+
+def _stock_cache_pairs(
+    cache: Any,
+) -> tuple[tuple[torch.Tensor, torch.Tensor], ...]:
+    if hasattr(cache, "layers"):
+        return tuple((layer.keys, layer.values) for layer in cache.layers)
+    if hasattr(cache, "key_cache") and hasattr(cache, "value_cache"):
+        return tuple(zip(cache.key_cache, cache.value_cache, strict=True))
+    return tuple((layer[0], layer[1]) for layer in cache)
+
+
+def test_paged_prefill_kv_is_bit_identical_to_stock_model_cache(
+    model_case: ModelCase,
+) -> None:
+    executor = model_case.executor
+    prompt = torch.tensor([model_case.prompt[:6]], dtype=torch.long)
+    execution = executor.prefill(prompt)
+
+    with torch.inference_mode():
+        stock_output = executor.model(
+            input_ids=prompt,
+            attention_mask=torch.ones_like(prompt),
+            use_cache=True,
+            return_dict=True,
+        )
+
+    for layer, (stock_k, stock_v) in enumerate(
+        _stock_cache_pairs(stock_output.past_key_values)
+    ):
+        paged_k, paged_v = execution.gather_kv(execution.root_id, layer)
+        assert torch.equal(paged_k, stock_k[0].transpose(0, 1).contiguous())
+        assert torch.equal(paged_v, stock_v[0].transpose(0, 1).contiguous())
 
 
 def test_tree_fork_has_bit_parity_with_sequential_execution(
