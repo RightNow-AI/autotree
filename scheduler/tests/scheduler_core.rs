@@ -1,21 +1,39 @@
 use autotree_scheduler::{
     BeamConfig, BestFirstConfig, BranchId, BranchState, BranchTree, Command, EngineEvent,
-    KillReason, LogprobScorer, MctsConfig, Policy, PolicyConfig, Scheduler, SchedulerConfig,
-    SchedulerError,
+    KillReason, LogprobScorer, MctsConfig, Policy, PolicyConfig, PolicyRng, Scheduler,
+    SchedulerConfig, SchedulerError,
 };
-use rand::rngs::StdRng;
 
 struct FailingPolicy;
+
+struct InvalidForkPolicy {
+    branch: BranchId,
+    width: u32,
+}
 
 impl Policy for FailingPolicy {
     fn on_event(
         &mut self,
         event: &EngineEvent,
         tree: &mut BranchTree,
-        _rng: &mut StdRng,
+        _rng: &mut PolicyRng,
     ) -> Result<Vec<Command>, SchedulerError> {
         tree.kill(event.branch(), KillReason::Drained)?;
         Err(SchedulerError::InvalidConfig("intentional policy failure"))
+    }
+}
+
+impl Policy for InvalidForkPolicy {
+    fn on_event(
+        &mut self,
+        _event: &EngineEvent,
+        _tree: &mut BranchTree,
+        _rng: &mut PolicyRng,
+    ) -> Result<Vec<Command>, SchedulerError> {
+        Ok(vec![Command::ForkAt {
+            branch: self.branch,
+            width: self.width,
+        }])
     }
 }
 
@@ -327,6 +345,84 @@ fn failed_policy_decision_rolls_back_core_state_atomically() {
     assert_eq!(root.tokens_generated(), 0);
     assert_eq!(scheduler.budget().total_consumed(), 0);
     assert!(scheduler.poll_commands().is_empty());
+}
+
+#[test]
+fn event_before_poll_consumes_the_queued_continue_reservation() {
+    let mut scheduler = Scheduler::new(config(3, 10, None)).unwrap();
+    let root = BranchId(0);
+
+    scheduler
+        .feed_event(EngineEvent::TokenSampled {
+            branch: root,
+            token: 0,
+            logprob: 0.0,
+        })
+        .unwrap();
+    scheduler
+        .feed_event(EngineEvent::TokenSampled {
+            branch: root,
+            token: 1,
+            logprob: 0.0,
+        })
+        .unwrap();
+
+    let commands = scheduler.poll_commands();
+    assert_eq!(
+        commands
+            .iter()
+            .filter(|command| **command == Command::Continue { branch: root })
+            .count(),
+        1
+    );
+    assert_eq!(scheduler.budget().total_consumed(), 2);
+    assert_eq!(scheduler.budget().remaining_total(), 1);
+}
+
+#[test]
+fn invalid_custom_policy_forks_are_rejected_without_state_or_queue_changes() {
+    let cases = [
+        (
+            BranchId(999),
+            1,
+            SchedulerError::UnknownBranch(BranchId(999)),
+        ),
+        (BranchId(0), 0, SchedulerError::InvalidWidth(0)),
+        (
+            BranchId(0),
+            u32::MAX,
+            SchedulerError::InvalidWidth(u32::MAX),
+        ),
+        (BranchId(0), 1, SchedulerError::PolicyCommandTreeMismatch),
+    ];
+
+    for (branch, width, expected) in cases {
+        let mut scheduler = Scheduler::with_components(
+            config(100, 100, None),
+            Box::new(InvalidForkPolicy { branch, width }),
+            Box::new(LogprobScorer),
+        )
+        .unwrap();
+
+        let result = scheduler.feed_event(EngineEvent::TokenSampled {
+            branch: BranchId(0),
+            token: 0,
+            logprob: -0.1,
+        });
+
+        assert_eq!(result, Err(expected));
+        assert_eq!(scheduler.tree().len(), 1);
+        assert_eq!(
+            scheduler
+                .tree()
+                .get(BranchId(0))
+                .unwrap()
+                .tokens_generated(),
+            0
+        );
+        assert_eq!(scheduler.budget().total_consumed(), 0);
+        assert!(scheduler.poll_commands().is_empty());
+    }
 }
 
 #[test]

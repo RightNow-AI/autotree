@@ -1,10 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use rand::{SeedableRng, rngs::StdRng};
+use rand::SeedableRng;
 
 use crate::{
     BranchId, BranchState, BranchTree, BudgetController, Command, EngineEvent, KillReason,
-    LogprobScorer, Policy, PolicyConfig, SchedulerError, ValueScorer,
+    LogprobScorer, Policy, PolicyConfig, PolicyRng, SchedulerError, ValueScorer,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -28,7 +28,7 @@ pub struct Scheduler {
     budget: BudgetController,
     policy: Box<dyn Policy>,
     scorer: Option<Box<dyn ValueScorer>>,
-    rng: StdRng,
+    rng: PolicyRng,
     command_queue: VecDeque<Command>,
     outstanding_continuations: BTreeSet<BranchId>,
     pending_external_values: BTreeSet<BranchId>,
@@ -85,7 +85,7 @@ impl Scheduler {
             budget,
             policy,
             scorer,
-            rng: StdRng::seed_from_u64(config.seed),
+            rng: PolicyRng::seed_from_u64(config.seed),
             command_queue: VecDeque::new(),
             outstanding_continuations: BTreeSet::new(),
             pending_external_values: BTreeSet::new(),
@@ -176,7 +176,7 @@ impl Scheduler {
                     self.tree.mark_value_pending(*branch)?;
                     self.pending_external_values.insert(*branch);
                 }
-                self.outstanding_continuations.remove(branch);
+                self.remove_queued_continue(*branch);
                 let external_score_pending = self.scorer.is_none();
                 tree_budget_exhausted = outcome.tree_exhausted && !external_score_pending;
                 if outcome.tree_exhausted && external_score_pending {
@@ -192,7 +192,7 @@ impl Scheduler {
                 }
             }
             EngineEvent::BranchExhausted { branch } => {
-                self.outstanding_continuations.remove(branch);
+                self.remove_queued_continue(*branch);
                 self.pending_external_values.remove(branch);
                 self.pending_budget_terminals.remove(branch);
                 self.tree.finalize(*branch)?;
@@ -226,9 +226,11 @@ impl Scheduler {
         }
 
         emitted.extend(self.speculative_prune()?);
+        let tree_before_policy = self.tree.clone();
         let policy_commands = self
             .policy
             .on_event(&event, &mut self.tree, &mut self.rng)?;
+        self.validate_policy_commands(&tree_before_policy, &policy_commands)?;
         let terminal_branches: Vec<_> = policy_commands
             .iter()
             .filter_map(|command| match command {
@@ -254,9 +256,53 @@ impl Scheduler {
         Ok(())
     }
 
+    fn validate_policy_commands(
+        &self,
+        tree_before_policy: &BranchTree,
+        commands: &[Command],
+    ) -> Result<(), SchedulerError> {
+        let mut expected = tree_before_policy.clone();
+        for command in commands {
+            match *command {
+                Command::ForkAt { branch, width } => {
+                    let _ = expected.fork(branch, width)?;
+                }
+                Command::Kill { branch, reason } => expected.kill(branch, reason)?,
+                Command::Finalize { branch } => expected.finalize(branch)?,
+                Command::Continue { branch } => {
+                    let node = expected
+                        .get(branch)
+                        .ok_or(SchedulerError::UnknownBranch(branch))?;
+                    if node.state() != BranchState::Active {
+                        return Err(SchedulerError::BranchNotActive(branch));
+                    }
+                }
+            }
+        }
+        if !expected.has_same_structure(&self.tree) {
+            return Err(SchedulerError::PolicyCommandTreeMismatch);
+        }
+        Ok(())
+    }
+
     #[must_use]
     pub fn poll_commands(&mut self) -> Vec<Command> {
         self.command_queue.drain(..).collect()
+    }
+
+    #[cfg(any(feature = "python", test))]
+    pub(crate) const fn pending_commands(&self) -> &VecDeque<Command> {
+        &self.command_queue
+    }
+
+    #[cfg(any(feature = "python", test))]
+    pub(crate) fn try_convert_pending_commands<T, E>(
+        &mut self,
+        convert: impl FnOnce(&VecDeque<Command>) -> Result<T, E>,
+    ) -> Result<T, E> {
+        let output = convert(self.pending_commands())?;
+        self.command_queue.clear();
+        Ok(output)
     }
 
     pub fn drain(&mut self) -> Result<(), SchedulerError> {
@@ -468,5 +514,45 @@ impl Scheduler {
             }
         }
         Ok(commands)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::BeamConfig;
+
+    #[test]
+    fn failed_command_conversion_leaves_the_queue_untouched() {
+        let mut scheduler = Scheduler::new(SchedulerConfig {
+            policy: PolicyConfig::Beam(BeamConfig {
+                width: 1,
+                fork_width: 1,
+                fork_at_tokens: Vec::new(),
+            }),
+            seed: 0,
+            total_token_budget: 10,
+            per_branch_token_budget: 10,
+            speculative_kill_margin: None,
+        })
+        .unwrap();
+        scheduler
+            .feed_event(EngineEvent::TokenSampled {
+                branch: BranchId(0),
+                token: 0,
+                logprob: 0.0,
+            })
+            .unwrap();
+
+        let result: Result<(), &str> =
+            scheduler.try_convert_pending_commands(|_| Err("injected allocation failure"));
+
+        assert_eq!(result, Err("injected allocation failure"));
+        assert_eq!(
+            scheduler.poll_commands(),
+            vec![Command::Continue {
+                branch: BranchId(0),
+            }]
+        );
     }
 }

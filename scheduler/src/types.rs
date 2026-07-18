@@ -200,6 +200,17 @@ impl BranchTree {
         self.nodes.iter()
     }
 
+    pub(crate) fn has_same_structure(&self, other: &Self) -> bool {
+        self.nodes.len() == other.nodes.len()
+            && self.nodes.iter().zip(&other.nodes).all(|(left, right)| {
+                left.id == right.id
+                    && left.parent == right.parent
+                    && left.children == right.children
+                    && left.depth == right.depth
+                    && left.state == right.state
+            })
+    }
+
     #[must_use]
     pub fn active_frontier(&self) -> Vec<BranchId> {
         self.nodes

@@ -1,8 +1,9 @@
-use rand::rngs::StdRng;
-
 use crate::{BranchTree, Command, EngineEvent, SchedulerError};
 
 use crate::policies::{BeamPolicy, BestFirstPolicy, MctsPolicy};
+
+/// Portable, explicitly versioned PRNG used by every scheduler policy.
+pub type PolicyRng = rand_chacha::ChaCha8Rng;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BeamConfig {
@@ -47,6 +48,6 @@ pub trait Policy: Send + Sync {
         &mut self,
         event: &EngineEvent,
         tree: &mut BranchTree,
-        rng: &mut StdRng,
+        rng: &mut PolicyRng,
     ) -> Result<Vec<Command>, SchedulerError>;
 }

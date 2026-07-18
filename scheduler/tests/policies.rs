@@ -377,6 +377,52 @@ fn best_first_respects_the_exact_max_depth_boundary() {
 }
 
 #[test]
+fn best_first_normalizes_signed_zero_before_logprob_tie_breaking() {
+    let mut scheduler = Scheduler::with_external_values(scheduler_config(PolicyConfig::BestFirst(
+        BestFirstConfig {
+            expansion_width: 2,
+            max_depth: 1,
+        },
+    )))
+    .unwrap();
+
+    scheduler
+        .feed_event(EngineEvent::TokenSampled {
+            branch: BranchId(0),
+            token: 0,
+            logprob: 0.0,
+        })
+        .unwrap();
+    scheduler
+        .feed_event(EngineEvent::ValueScored {
+            branch: BranchId(0),
+            score: 0.0,
+        })
+        .unwrap();
+    let _ = scheduler.poll_commands();
+
+    for (branch, logprob, score) in [(BranchId(1), 0.0, -0.0), (BranchId(2), -1.0, 0.0)] {
+        scheduler
+            .feed_event(EngineEvent::TokenSampled {
+                branch,
+                token: u32::try_from(branch.0).unwrap(),
+                logprob,
+            })
+            .unwrap();
+        scheduler
+            .feed_event(EngineEvent::ValueScored { branch, score })
+            .unwrap();
+    }
+
+    assert_eq!(
+        scheduler.poll_commands(),
+        vec![Command::Continue {
+            branch: BranchId(1),
+        }]
+    );
+}
+
+#[test]
 fn mcts_visit_counts_concentrate_on_the_biased_oracle_subtree() {
     let (better_visits, worse_visits) = run_mcts_oracle(1.0, 0.0, 0xA11CE);
     assert!(worse_visits > 0, "UCT must explore the worse subtree");

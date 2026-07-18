@@ -1,8 +1,6 @@
-use rand::rngs::StdRng;
-
 use crate::{
     BestFirstConfig, BranchId, BranchTree, Command, EngineEvent, MAX_BRANCH_WIDTH, Policy,
-    SchedulerError,
+    PolicyRng, SchedulerError,
 };
 
 #[derive(Clone, Debug)]
@@ -34,9 +32,8 @@ impl BestFirstPolicy {
         frontier.sort_by(|left, right| {
             let left_node = tree.get(*left).expect("frontier ids come from the arena");
             let right_node = tree.get(*right).expect("frontier ids come from the arena");
-            right_node
-                .value_estimate()
-                .total_cmp(&left_node.value_estimate())
+            normalize_signed_zero(right_node.value_estimate())
+                .total_cmp(&normalize_signed_zero(left_node.value_estimate()))
                 .then_with(|| {
                     right_node
                         .cumulative_logprob()
@@ -48,12 +45,16 @@ impl BestFirstPolicy {
     }
 }
 
+fn normalize_signed_zero(value: f64) -> f64 {
+    if value == 0.0 { 0.0 } else { value }
+}
+
 impl Policy for BestFirstPolicy {
     fn on_event(
         &mut self,
         _event: &EngineEvent,
         tree: &mut BranchTree,
-        _rng: &mut StdRng,
+        _rng: &mut PolicyRng,
     ) -> Result<Vec<Command>, SchedulerError> {
         let ranked = Self::ranked_frontier(tree);
         if ranked.is_empty() {

@@ -15,7 +15,7 @@ pub use budget::BudgetController;
 pub use command::{Command, EngineEvent, encode_command_stream};
 pub use error::SchedulerError;
 pub use policies::{BeamPolicy, BestFirstPolicy, MctsPolicy};
-pub use policy::{BeamConfig, BestFirstConfig, MctsConfig, Policy, PolicyConfig};
+pub use policy::{BeamConfig, BestFirstConfig, MctsConfig, Policy, PolicyConfig, PolicyRng};
 #[cfg(feature = "python")]
 pub use python::PyScheduler;
 pub use scheduler::{Scheduler, SchedulerConfig};
