@@ -11,6 +11,7 @@ from autotree_core.engine import (
     BranchStarted,
     GenerationDone,
     GenerationRequest,
+    KVCapacityExceededError,
     Message,
     TokenGenerated,
     TreeExecution,
@@ -69,6 +70,21 @@ class ExhaustionScheduler:
             self._commands.append({"type": "continue", "branch": event["branch"]})
         elif event["type"] == "branch_exhausted":
             self._commands.append({"type": "finalize", "branch": event["branch"]})
+
+    def poll_commands(self) -> list[dict[str, object]]:
+        commands = list(self._commands)
+        self._commands.clear()
+        return commands
+
+
+class ContinueUntilCapacityScheduler:
+    def __init__(self, config: dict[str, object]) -> None:
+        self.config = config
+        self._commands: deque[dict[str, object]] = deque()
+
+    def feed_event(self, event: dict[str, object]) -> None:
+        if event["type"] == "token_sampled":
+            self._commands.append({"type": "continue", "branch": event["branch"]})
 
     def poll_commands(self) -> list[dict[str, object]]:
         commands = list(self._commands)
@@ -194,3 +210,27 @@ def test_eos_feeds_branch_exhausted_and_finishes_with_stop(
     ]
     done = next(event for event in events if isinstance(event, GenerationDone))
     assert done.finish_reason == "stop"
+
+
+def test_mid_decode_capacity_exhaustion_is_promoted_to_engine_error(
+    tiny_engine_case,
+) -> None:
+    executor = type(tiny_engine_case.executor)(
+        replace(tiny_engine_case.executor.config, capacity_pages=2),
+        model=tiny_engine_case.executor.model,
+    )
+    engine = TreeKVEngine(
+        model_id="tiny-engine-model",
+        executor=executor,
+        tokenizer=tiny_engine_case.tokenizer,
+        scheduler_factory=ContinueUntilCapacityScheduler,
+    )
+    generation_request = replace(request(), max_tokens=8, tree=None)
+
+    with pytest.raises(KVCapacityExceededError) as raised:
+        asyncio.run(collect(engine, generation_request))
+
+    assert raised.value.phase == "decode"
+    assert raised.value.required_pages == 1
+    assert raised.value.available_pages == 0
+    assert raised.value.capacity_pages == 2

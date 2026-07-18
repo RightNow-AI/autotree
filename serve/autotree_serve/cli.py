@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 from collections.abc import Sequence
 
@@ -37,6 +38,24 @@ def build_parser() -> argparse.ArgumentParser:
             "'treekv' uses the Rust scheduler and real HuggingFace weights on CPU."
         ),
     )
+    serve.add_argument(
+        "--kv-pages",
+        type=_positive_int,
+        default=None,
+        help=(
+            "Explicit Tree-KV page limit for --engine treekv. By default it is "
+            "derived from model context length and --kv-branch-headroom."
+        ),
+    )
+    serve.add_argument(
+        "--kv-branch-headroom",
+        type=_branch_headroom,
+        default=1.5,
+        help=(
+            "Multiplier applied to context-window pages when deriving the Tree-KV "
+            "limit (default: 1.5)."
+        ),
+    )
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8000)
     return parser
@@ -46,7 +65,11 @@ def main(argv: Sequence[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     if args.engine == "treekv":
         try:
-            engine = _load_treekv_engine(args.model)
+            engine = _load_treekv_engine(
+                args.model,
+                kv_pages=args.kv_pages,
+                kv_branch_headroom=args.kv_branch_headroom,
+            )
         except Exception as error:
             print(
                 f"Failed to load Tree-KV CPU model {args.model!r}: {error}",
@@ -62,10 +85,33 @@ def main(argv: Sequence[str] | None = None) -> None:
     uvicorn.run(create_app(engine), host=args.host, port=args.port)
 
 
-def _load_treekv_engine(model_id: str):
+def _load_treekv_engine(
+    model_id: str,
+    *,
+    kv_pages: int | None,
+    kv_branch_headroom: float,
+):
     from autotree_core.engine import TreeKVEngine
 
-    return TreeKVEngine(model_id=model_id)
+    return TreeKVEngine(
+        model_id=model_id,
+        kv_pages=kv_pages,
+        kv_branch_headroom=kv_branch_headroom,
+    )
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
+def _branch_headroom(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed) or parsed < 1.0:
+        raise argparse.ArgumentTypeError("must be finite and at least 1.0")
+    return parsed
 
 
 if __name__ == "__main__":
