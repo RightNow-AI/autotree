@@ -14,6 +14,7 @@ pub enum SchedulerError {
     BudgetAlreadyExhausted(BranchId),
     ValueScorePending(BranchId),
     UnexpectedValueScore(BranchId),
+    PolicyCommandTreeMismatch,
     CounterOverflow(&'static str),
 }
 
@@ -47,6 +48,9 @@ impl fmt::Display for SchedulerError {
                 "branch {} has no pending external value score",
                 branch.0
             ),
+            Self::PolicyCommandTreeMismatch => {
+                write!(formatter, "policy commands do not match policy tree mutations")
+            }
             Self::CounterOverflow(field) => write!(formatter, "{field} overflowed"),
         }
     }

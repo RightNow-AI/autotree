@@ -226,9 +226,11 @@ impl Scheduler {
         }
 
         emitted.extend(self.speculative_prune()?);
+        let tree_before_policy = self.tree.clone();
         let policy_commands = self
             .policy
             .on_event(&event, &mut self.tree, &mut self.rng)?;
+        self.validate_policy_commands(&tree_before_policy, &policy_commands)?;
         let terminal_branches: Vec<_> = policy_commands
             .iter()
             .filter_map(|command| match command {
@@ -251,6 +253,35 @@ impl Scheduler {
                 .is_some_and(|node| node.state().is_live())
         });
         self.enqueue_commands(emitted);
+        Ok(())
+    }
+
+    fn validate_policy_commands(
+        &self,
+        tree_before_policy: &BranchTree,
+        commands: &[Command],
+    ) -> Result<(), SchedulerError> {
+        let mut expected = tree_before_policy.clone();
+        for command in commands {
+            match *command {
+                Command::ForkAt { branch, width } => {
+                    let _ = expected.fork(branch, width)?;
+                }
+                Command::Kill { branch, reason } => expected.kill(branch, reason)?,
+                Command::Finalize { branch } => expected.finalize(branch)?,
+                Command::Continue { branch } => {
+                    let node = expected
+                        .get(branch)
+                        .ok_or(SchedulerError::UnknownBranch(branch))?;
+                    if node.state() != BranchState::Active {
+                        return Err(SchedulerError::BranchNotActive(branch));
+                    }
+                }
+            }
+        }
+        if !expected.has_same_structure(&self.tree) {
+            return Err(SchedulerError::PolicyCommandTreeMismatch);
+        }
         Ok(())
     }
 
