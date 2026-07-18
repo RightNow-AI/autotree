@@ -49,9 +49,10 @@ token usage, and a `tree` summary containing branch outcomes, scores, token
 spend, and KV reuse. See [the full quickstart](docs/quickstart.md) for the
 captured output and troubleshooting.
 
-There is no web playground in the current tree. The API demo above is the
-working shareable surface today; the live tree playground remains roadmap
-work.
+With the server running, the live tree playground is at
+`http://127.0.0.1:8000/playground`: paste a prompt and watch branches fork,
+prune, and merge in real time. It is a fully offline page served by
+`autotree-serve` itself.
 
 ## Packages
 
