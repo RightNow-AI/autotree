@@ -30,7 +30,14 @@ def test_accuracy_and_pass_power_k_match_hand_computed_outcomes() -> None:
     assert pass_power_k(outcomes, 4) == pytest.approx(0.25)
 
 
-def _sample(task_id: str, index: int, correct: bool, latency: float) -> SampleResult:
+def _sample(
+    task_id: str,
+    index: int,
+    correct: bool,
+    latency: float,
+    *,
+    kv_reuse_ratio: float | None = None,
+) -> SampleResult:
     return SampleResult(
         sample_key=f"{task_id}-{index}",
         task_id=task_id,
@@ -50,6 +57,7 @@ def _sample(task_id: str, index: int, correct: bool, latency: float) -> SampleRe
         ttft_seconds=latency / 10,
         tokens_per_second=5 / latency,
         rollout_throughput_per_hour=3600 / latency,
+        kv_reuse_ratio=kv_reuse_ratio,
     )
 
 
@@ -98,3 +106,16 @@ def test_tokens_and_cost_per_correct_are_null_without_a_correct_sample() -> None
 
     assert metrics.tokens_per_correct is None
     assert metrics.cost_per_correct_usd is None
+
+
+def test_core_logical_over_physical_kv_reuse_ratio_is_preserved() -> None:
+    metrics = compute_metric_set(
+        [_sample("a", 0, True, 1, kv_reuse_ratio=5.0)],
+        metric_ks=(1,),
+        input_cost_per_million=0,
+        output_cost_per_million=0,
+    )
+
+    assert metrics.kv_reuse_ratio.mean == 5.0
+    assert metrics.kv_reuse_ratio.minimum == 5.0
+    assert metrics.kv_reuse_ratio.maximum == 5.0

@@ -2,7 +2,16 @@ from __future__ import annotations
 
 import pytest
 
-from autotree_sdk import ExportError, TreeClient, rollout
+from autotree_sdk import (
+    ExportError,
+    RolloutBatch,
+    RolloutBranch,
+    RolloutTree,
+    TreeClient,
+    TreeSummary,
+    Usage,
+    rollout,
+)
 
 from .mock_asgi import MockAutoTreeASGI, make_http_client
 
@@ -76,3 +85,50 @@ def test_rlhf_export_rejects_positional_final_scores() -> None:
     assert batch.trees[0].tree_summary.final_scores == [0.9, 0.1]
     with pytest.raises(ExportError, match="ambiguous_final_scores"):
         batch.to_rlhf_pairs()
+
+
+def test_exports_reconstruct_forked_branch_full_path_completion() -> None:
+    root = RolloutBranch(
+        branch_id="root",
+        parent_id=None,
+        branch_path=["root"],
+        tokens=["shared "],
+        token_ids=[None],
+        token_logprobs=[-0.1],
+        token_indices=[0],
+        status="completed",
+    )
+    leaf = RolloutBranch(
+        branch_id="leaf",
+        parent_id="root",
+        branch_path=["root", "leaf"],
+        tokens=["completion"],
+        token_ids=[None],
+        token_logprobs=[-0.2],
+        token_indices=[0],
+        status="completed",
+    )
+    batch = RolloutBatch(
+        trees=[
+            RolloutTree(
+                prompt="prompt",
+                branches=[root, leaf],
+                usage=Usage(prompt_tokens=1, completion_tokens=2, total_tokens=3),
+                tree_summary=TreeSummary(
+                    branch_count=2,
+                    pruned_count=0,
+                    tokens_spent_per_branch={"root": 1, "leaf": 1},
+                    final_scores={"root": 0.1, "leaf": 0.9},
+                ),
+            )
+        ]
+    )
+
+    grpo_leaf = next(
+        sample for sample in batch.to_grpo_samples() if sample["branch_id"] == "leaf"
+    )
+    pair = batch.to_rlhf_pairs()[0]
+
+    assert grpo_leaf["completion"] == "shared completion"
+    assert grpo_leaf["token_logprobs"] == [-0.1, -0.2]
+    assert pair["chosen"]["completion"] == "shared completion"
