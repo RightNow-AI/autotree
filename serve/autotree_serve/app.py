@@ -8,11 +8,12 @@ import time
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, generate_latest
 
 from .engine import (
@@ -52,6 +53,13 @@ _UNSUPPORTED_SEMANTIC_FIELDS = frozenset(
         "top_logprobs",
         "web_search_options",
     }
+)
+
+_PLAYGROUND_PATH = Path(__file__).with_name("playground") / "index.html"
+_PLAYGROUND_CSP = (
+    "default-src 'self'; style-src 'unsafe-inline'; "
+    "script-src 'unsafe-inline'; connect-src 'self'; "
+    "img-src 'self' data:; base-uri 'none'; form-action 'self'"
 )
 
 
@@ -329,6 +337,14 @@ def create_app(
                 }
             ],
         }
+
+    @app.get("/playground", response_class=HTMLResponse)
+    @app.get("/playground/", response_class=HTMLResponse)
+    async def playground() -> HTMLResponse:
+        return HTMLResponse(
+            _PLAYGROUND_PATH.read_text(encoding="utf-8"),
+            headers={"Content-Security-Policy": _PLAYGROUND_CSP},
+        )
 
     @app.post("/v1/chat/completions")
     async def chat_completions(body: ChatCompletionRequest) -> Response:
