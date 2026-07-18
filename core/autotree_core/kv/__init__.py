@@ -1,20 +1,15 @@
-"""autotree-core: Tree-KV engine for LLM test-time compute."""
+"""Public API for AutoTree's paged KV cache."""
 
-from .kv import (
-    PAGE_SIZE,
-    Branch,
+from .config import PAGE_SIZE, KVPoolConfig
+from .errors import (
     BranchHasChildrenError,
     KVCapacityError,
     KVError,
     KVInvariantError,
-    KVPoolConfig,
-    KVStats,
-    PagedKVPool,
-    TreeState,
-    gather_branch_kv,
 )
-
-__version__ = "0.1.0"
+from .gather import gather_branch_kv
+from .pool import KVStats, PagedKVPool
+from .tree_state import Branch, TreeState
 
 __all__ = [
     "PAGE_SIZE",
@@ -27,6 +22,5 @@ __all__ = [
     "KVStats",
     "PagedKVPool",
     "TreeState",
-    "__version__",
     "gather_branch_kv",
 ]
