@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
+from dataclasses import replace
 
 import pytest
 
@@ -45,6 +46,29 @@ class ScriptedScheduler:
                     {"type": "kill", "branch": 0, "reason": "tree_budget_exhausted"},
                 ]
             )
+
+    def poll_commands(self) -> list[dict[str, object]]:
+        commands = list(self._commands)
+        self._commands.clear()
+        return commands
+
+
+class ExhaustionScheduler:
+    def __init__(
+        self,
+        config: dict[str, object],
+        observed_events: list[dict[str, object]],
+    ) -> None:
+        self.config = config
+        self.observed_events = observed_events
+        self._commands: deque[dict[str, object]] = deque()
+
+    def feed_event(self, event: dict[str, object]) -> None:
+        self.observed_events.append(event)
+        if event["type"] == "token_sampled":
+            self._commands.append({"type": "continue", "branch": event["branch"]})
+        elif event["type"] == "branch_exhausted":
+            self._commands.append({"type": "finalize", "branch": event["branch"]})
 
     def poll_commands(self) -> list[dict[str, object]]:
         commands = list(self._commands)
@@ -142,3 +166,31 @@ def test_real_scheduler_never_exceeds_requested_tree_budget(tiny_engine_case) ->
 
     assert done.usage.completion_tokens == 3
     assert sum(done.tree_summary.tokens_spent_per_branch.values()) == 3
+
+
+def test_eos_feeds_branch_exhausted_and_finishes_with_stop(
+    tiny_engine_case,
+) -> None:
+    observed_events: list[dict[str, object]] = []
+    expected_id = int(
+        tiny_engine_case.executor.prefill([5, 6, 7, 8])
+        .next_logits(0)
+        .argmax()
+        .item()
+    )
+    tiny_engine_case.tokenizer.eos_token_id = expected_id
+    engine = TreeKVEngine(
+        model_id="tiny-engine-model",
+        executor=tiny_engine_case.executor,
+        tokenizer=tiny_engine_case.tokenizer,
+        scheduler_factory=lambda config: ExhaustionScheduler(config, observed_events),
+    )
+
+    events = asyncio.run(collect(engine, replace(request(), tree=None)))
+
+    assert [event["type"] for event in observed_events] == [
+        "token_sampled",
+        "branch_exhausted",
+    ]
+    done = next(event for event in events if isinstance(event, GenerationDone))
+    assert done.finish_reason == "stop"

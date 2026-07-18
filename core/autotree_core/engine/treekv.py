@@ -19,7 +19,6 @@ from .protocol import (
     BranchPruned,
     BranchStarted,
     EngineCounters,
-    EngineEvent,
     EngineUsage,
     GenerationDone,
     GenerationRequest,
@@ -107,6 +106,8 @@ class TreeKVEngine:
         scores: dict[int, float] = {execution.root_id: 0.0}
         active = {execution.root_id}
         finalized: set[int] = set()
+        exhaustion_pending: set[int] = set()
+        stopped: set[int] = set()
         commands: deque[dict[str, object]] = deque()
         completion_tokens = 0
         pruned_count = 0
@@ -137,6 +138,9 @@ class TreeKVEngine:
             path_text[branch_id] += token
             scores[branch_id] += logprob
             completion_tokens += 1
+            if self._token_exhausts_branch(token_id, path_text[branch_id], request):
+                exhaustion_pending.add(branch_id)
+                stopped.add(branch_id)
             if first_token_at is None:
                 first_token_at = time.perf_counter()
             best_snapshot = self._better_snapshot(best_snapshot, self._snapshot(execution))
@@ -172,12 +176,21 @@ class TreeKVEngine:
             command_type = str(command.get("type"))
             branch_id = int(command["branch"])
             if command_type == "continue":
+                if branch_id in exhaustion_pending:
+                    exhaustion_pending.remove(branch_id)
+                    scheduler.feed_event(
+                        {"type": "branch_exhausted", "branch": branch_id}
+                    )
+                    commands.extend(scheduler.poll_commands())
+                    continue
                 yield await advance(branch_id)
                 continue
             if command_type == "fork_at":
                 if branch_id not in active:
                     raise RuntimeError(f"ForkAt targeted inactive branch {branch_id}")
                 width = int(command["width"])
+                children_are_exhausted = branch_id in exhaustion_pending
+                exhaustion_pending.discard(branch_id)
                 active.remove(branch_id)
                 for _ in range(width):
                     expected_id = max(parents) + 1
@@ -193,6 +206,9 @@ class TreeKVEngine:
                     token_counts[child_id] = 0
                     scores[child_id] = scores[branch_id]
                     active.add(child_id)
+                    if children_are_exhausted:
+                        exhaustion_pending.add(child_id)
+                        stopped.add(child_id)
                     yield BranchStarted(
                         branch_id=self._branch_name(child_id),
                         parent_id=self._branch_name(branch_id),
@@ -202,6 +218,7 @@ class TreeKVEngine:
                 )
                 continue
             if command_type == "kill":
+                exhaustion_pending.discard(branch_id)
                 if branch_id in active:
                     active.remove(branch_id)
                 self.executor.prune(execution, branch_id)
@@ -212,6 +229,7 @@ class TreeKVEngine:
                 )
                 continue
             if command_type == "finalize":
+                exhaustion_pending.discard(branch_id)
                 if branch_id in active:
                     active.remove(branch_id)
                 finalized.add(branch_id)
@@ -263,7 +281,7 @@ class TreeKVEngine:
         yield GenerationDone(
             branch_id=self._branch_name(winner),
             text=winner_text,
-            finish_reason="length",
+            finish_reason="stop" if winner in stopped else "length",
             usage=EngineUsage(
                 prompt_tokens=len(prompt_ids),
                 completion_tokens=completion_tokens,
@@ -319,6 +337,21 @@ class TreeKVEngine:
             "external",
             "value_head",
         }
+
+    def _token_exhausts_branch(
+        self,
+        token_id: int,
+        text: str,
+        request: GenerationRequest,
+    ) -> bool:
+        eos_token_id = getattr(self.tokenizer, "eos_token_id", None)
+        if isinstance(eos_token_id, int):
+            is_eos = token_id == eos_token_id
+        elif isinstance(eos_token_id, (list, tuple, set, frozenset)):
+            is_eos = token_id in eos_token_id
+        else:
+            is_eos = False
+        return is_eos or any(stop and stop in text for stop in request.stop)
 
     @classmethod
     def _scheduler_config(cls, request: GenerationRequest) -> dict[str, object]:
