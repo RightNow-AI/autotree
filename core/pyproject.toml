@@ -17,6 +17,7 @@ dependencies = [
 [project.optional-dependencies]
 triton = ["triton>=3.0; platform_system == 'Linux'"]
 modeling = ["transformers>=4.44", "safetensors>=0.4"]
+engine = ["transformers>=4.44", "safetensors>=0.4"]
 dev = [
   "pytest>=8",
   "hypothesis>=6",
