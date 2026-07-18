@@ -7,6 +7,8 @@ use crate::{
     LogprobScorer, Policy, PolicyConfig, PolicyRng, SchedulerError, ValueScorer,
 };
 
+pub const DEFAULT_MAX_PENDING_EVENTS: u64 = 64;
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct SchedulerConfig {
     pub policy: PolicyConfig,
@@ -31,8 +33,10 @@ pub struct Scheduler {
     rng: PolicyRng,
     command_queue: VecDeque<Command>,
     outstanding_continuations: BTreeSet<BranchId>,
-    pending_external_values: BTreeSet<BranchId>,
+    pending_external_values: BTreeMap<BranchId, u64>,
     pending_budget_terminals: BTreeMap<BranchId, PendingBudgetTerminal>,
+    accepted_event_count: u64,
+    max_pending_events: Option<u64>,
     speculative_kill_margin: Option<f64>,
     rollback_custom_policy_errors: bool,
 }
@@ -47,13 +51,27 @@ impl Scheduler {
         scorer: Box<dyn ValueScorer>,
     ) -> Result<Self, SchedulerError> {
         let policy = config.policy.build()?;
-        Self::from_components(config, policy, Some(scorer), false)
+        Self::from_components(config, policy, Some(scorer), None, false)
     }
 
     /// Builds a scheduler whose engine supplies one `ValueScored` event after each token.
     pub fn with_external_values(config: SchedulerConfig) -> Result<Self, SchedulerError> {
+        Self::with_external_values_and_pending_event_budget(config, DEFAULT_MAX_PENDING_EVENTS)
+    }
+
+    /// Builds an external-value scheduler that deterministically substitutes the branch's
+    /// cumulative logprob after `max_pending_events` subsequently accepted engine events.
+    pub fn with_external_values_and_pending_event_budget(
+        config: SchedulerConfig,
+        max_pending_events: u64,
+    ) -> Result<Self, SchedulerError> {
+        if max_pending_events == 0 {
+            return Err(SchedulerError::InvalidConfig(
+                "max_pending_events must be greater than zero",
+            ));
+        }
         let policy = config.policy.build()?;
-        Self::from_components(config, policy, None, false)
+        Self::from_components(config, policy, None, Some(max_pending_events), false)
     }
 
     pub fn with_components(
@@ -61,13 +79,14 @@ impl Scheduler {
         policy: Box<dyn Policy>,
         scorer: Box<dyn ValueScorer>,
     ) -> Result<Self, SchedulerError> {
-        Self::from_components(config, policy, Some(scorer), true)
+        Self::from_components(config, policy, Some(scorer), None, true)
     }
 
     fn from_components(
         config: SchedulerConfig,
         policy: Box<dyn Policy>,
         scorer: Option<Box<dyn ValueScorer>>,
+        max_pending_events: Option<u64>,
         rollback_custom_policy_errors: bool,
     ) -> Result<Self, SchedulerError> {
         if config
@@ -88,8 +107,10 @@ impl Scheduler {
             rng: PolicyRng::seed_from_u64(config.seed),
             command_queue: VecDeque::new(),
             outstanding_continuations: BTreeSet::new(),
-            pending_external_values: BTreeSet::new(),
+            pending_external_values: BTreeMap::new(),
             pending_budget_terminals: BTreeMap::new(),
+            accepted_event_count: 0,
+            max_pending_events,
             speculative_kill_margin: config.speculative_kill_margin,
             rollback_custom_policy_errors,
         })
@@ -116,6 +137,7 @@ impl Scheduler {
         let outstanding_continuations = self.outstanding_continuations.clone();
         let pending_external_values = self.pending_external_values.clone();
         let pending_budget_terminals = self.pending_budget_terminals.clone();
+        let accepted_event_count = self.accepted_event_count;
 
         if let Err(error) = self.feed_event_inner(event) {
             self.tree = tree;
@@ -125,12 +147,23 @@ impl Scheduler {
             self.outstanding_continuations = outstanding_continuations;
             self.pending_external_values = pending_external_values;
             self.pending_budget_terminals = pending_budget_terminals;
+            self.accepted_event_count = accepted_event_count;
             return Err(error);
         }
         Ok(())
     }
 
     fn feed_event_inner(&mut self, event: EngineEvent) -> Result<(), SchedulerError> {
+        let accepted_event_count = self
+            .accepted_event_count
+            .checked_add(1)
+            .ok_or(SchedulerError::CounterOverflow("accepted event count"))?;
+        self.process_event(event)?;
+        self.accepted_event_count = accepted_event_count;
+        self.resolve_expired_pending_scores()
+    }
+
+    fn process_event(&mut self, event: EngineEvent) -> Result<(), SchedulerError> {
         let branch = event.branch();
         let node = self
             .tree
@@ -138,24 +171,28 @@ impl Scheduler {
             .ok_or(SchedulerError::UnknownBranch(branch))?;
         let accepts_event = match &event {
             EngineEvent::ValueScored { .. } => node.state().is_live(),
-            EngineEvent::TokenSampled { .. } | EngineEvent::BranchExhausted { .. } => {
-                node.state() == BranchState::Active
-            }
+            EngineEvent::TokenSampled { .. }
+            | EngineEvent::TokenSampledWithEos { .. }
+            | EngineEvent::BranchExhausted { .. } => node.state() == BranchState::Active,
         };
         if !accepts_event {
             return Err(SchedulerError::BranchNotActive(branch));
         }
-        if matches!(event, EngineEvent::TokenSampled { .. })
+        if event.is_token_sampled()
             && self.scorer.is_none()
-            && self.pending_external_values.contains(&branch)
+            && self.pending_external_values.contains_key(&branch)
         {
             return Err(SchedulerError::ValueScorePending(branch));
         }
 
         let mut emitted = Vec::new();
         let mut tree_budget_exhausted = false;
+        let eos = event.is_eos();
         match &event {
             EngineEvent::TokenSampled {
+                branch, logprob, ..
+            }
+            | EngineEvent::TokenSampledWithEos {
                 branch, logprob, ..
             } => {
                 let projected = self.tree.projected_after_token(*branch, *logprob)?;
@@ -168,18 +205,26 @@ impl Scheduler {
                     .get(*branch)
                     .ok_or(SchedulerError::UnknownBranch(*branch))?
                     .tokens_generated();
+                let pending_deadline = (self.scorer.is_none() && !eos)
+                    .then(|| self.pending_deadline_for_current_event())
+                    .transpose()?;
                 let outcome = self.budget.consume(*branch, branch_tokens)?;
                 self.tree.record_token(*branch, *logprob)?;
                 if let Some(score) = score {
                     self.tree.record_value(*branch, score)?;
-                } else {
+                } else if let Some(deadline) = pending_deadline {
                     self.tree.mark_value_pending(*branch)?;
-                    self.pending_external_values.insert(*branch);
+                    self.pending_external_values.insert(*branch, deadline);
                 }
                 self.remove_queued_continue(*branch);
-                let external_score_pending = self.scorer.is_none();
+                let external_score_pending = self.scorer.is_none() && !eos;
                 tree_budget_exhausted = outcome.tree_exhausted && !external_score_pending;
-                if outcome.tree_exhausted && external_score_pending {
+                if eos {
+                    self.tree.finalize(*branch)?;
+                    emitted.push(Command::Finalize { branch: *branch });
+                    emitted.extend(self.reclaim_completed_ancestors(*branch)?);
+                    tree_budget_exhausted = outcome.tree_exhausted;
+                } else if outcome.tree_exhausted && external_score_pending {
                     self.pending_budget_terminals
                         .insert(*branch, PendingBudgetTerminal::Tree);
                 } else if outcome.branch_exhausted && external_score_pending {
@@ -200,7 +245,7 @@ impl Scheduler {
                 emitted.extend(self.reclaim_completed_ancestors(*branch)?);
             }
             EngineEvent::ValueScored { branch, score } => {
-                if self.scorer.is_some() || !self.pending_external_values.contains(branch) {
+                if self.scorer.is_some() || !self.pending_external_values.contains_key(branch) {
                     return Err(SchedulerError::UnexpectedValueScore(*branch));
                 }
                 self.tree.record_value(*branch, *score)?;
@@ -225,6 +270,11 @@ impl Scheduler {
             return Ok(());
         }
 
+        if eos {
+            self.enqueue_commands(emitted);
+            return Ok(());
+        }
+
         emitted.extend(self.speculative_prune()?);
         let tree_before_policy = self.tree.clone();
         let policy_commands = self
@@ -242,7 +292,7 @@ impl Scheduler {
         for branch in terminal_branches {
             emitted.extend(self.reclaim_completed_ancestors(branch)?);
         }
-        self.pending_external_values.retain(|branch| {
+        self.pending_external_values.retain(|branch, _| {
             self.tree
                 .get(*branch)
                 .is_some_and(|node| node.state().is_live())
@@ -253,6 +303,38 @@ impl Scheduler {
                 .is_some_and(|node| node.state().is_live())
         });
         self.enqueue_commands(emitted);
+        Ok(())
+    }
+
+    fn pending_deadline_for_current_event(&self) -> Result<u64, SchedulerError> {
+        self.accepted_event_count
+            .checked_add(1)
+            .and_then(|count| count.checked_add(self.max_pending_events?))
+            .ok_or(SchedulerError::CounterOverflow("pending score deadline"))
+    }
+
+    fn resolve_expired_pending_scores(&mut self) -> Result<(), SchedulerError> {
+        let expired: Vec<_> = self
+            .pending_external_values
+            .iter()
+            .filter_map(|(branch, deadline)| {
+                (*deadline <= self.accepted_event_count).then_some(*branch)
+            })
+            .collect();
+        for branch in expired {
+            if !self.pending_external_values.contains_key(&branch) {
+                continue;
+            }
+            let proxy = self
+                .tree
+                .get(branch)
+                .ok_or(SchedulerError::UnknownBranch(branch))?
+                .cumulative_logprob();
+            self.process_event(EngineEvent::ValueScored {
+                branch,
+                score: proxy,
+            })?;
+        }
         Ok(())
     }
 
@@ -339,7 +421,7 @@ impl Scheduler {
                     let reserved =
                         u64::try_from(self.outstanding_continuations.len()).unwrap_or(u64::MAX);
                     if branch_can_advance
-                        && !self.pending_external_values.contains(&branch)
+                        && !self.pending_external_values.contains_key(&branch)
                         && !self.outstanding_continuations.contains(&branch)
                         && reserved < self.budget.remaining_total()
                     {
@@ -454,18 +536,24 @@ impl Scheduler {
         active.sort_by(|left, right| {
             let left_node = self.tree.get(*left).expect("known frontier branch");
             let right_node = self.tree.get(*right).expect("known frontier branch");
-            let left_score = if left_node.has_value() {
-                left_node.value_estimate()
-            } else {
-                left_node.cumulative_logprob()
-            };
-            let right_score = if right_node.has_value() {
-                right_node.value_estimate()
-            } else {
-                right_node.cumulative_logprob()
-            };
-            right_score
-                .total_cmp(&left_score)
+            // Values and logprobs are unrelated scales. Rank the scored tier first, then
+            // compare only like-for-like numbers within each tier.
+            right_node
+                .has_value()
+                .cmp(&left_node.has_value())
+                .then_with(|| {
+                    let left_score = if left_node.has_value() {
+                        left_node.value_estimate()
+                    } else {
+                        left_node.cumulative_logprob()
+                    };
+                    let right_score = if right_node.has_value() {
+                        right_node.value_estimate()
+                    } else {
+                        right_node.cumulative_logprob()
+                    };
+                    right_score.total_cmp(&left_score)
+                })
                 .then_with(|| left.cmp(right))
         });
 

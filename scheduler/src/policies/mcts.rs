@@ -153,10 +153,7 @@ impl Policy for MctsPolicy {
         tree: &mut BranchTree,
         rng: &mut PolicyRng,
     ) -> Result<Vec<Command>, SchedulerError> {
-        if matches!(
-            event,
-            EngineEvent::TokenSampled { .. } | EngineEvent::ValueScored { .. }
-        ) {
+        if event.is_token_sampled() || matches!(event, EngineEvent::ValueScored { .. }) {
             let branch = event.branch();
             let node = tree
                 .get(branch)
