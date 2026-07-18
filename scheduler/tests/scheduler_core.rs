@@ -349,6 +349,38 @@ fn failed_policy_decision_rolls_back_core_state_atomically() {
 }
 
 #[test]
+fn event_before_poll_consumes_the_queued_continue_reservation() {
+    let mut scheduler = Scheduler::new(config(3, 10, None)).unwrap();
+    let root = BranchId(0);
+
+    scheduler
+        .feed_event(EngineEvent::TokenSampled {
+            branch: root,
+            token: 0,
+            logprob: 0.0,
+        })
+        .unwrap();
+    scheduler
+        .feed_event(EngineEvent::TokenSampled {
+            branch: root,
+            token: 1,
+            logprob: 0.0,
+        })
+        .unwrap();
+
+    let commands = scheduler.poll_commands();
+    assert_eq!(
+        commands
+            .iter()
+            .filter(|command| **command == Command::Continue { branch: root })
+            .count(),
+        1
+    );
+    assert_eq!(scheduler.budget().total_consumed(), 2);
+    assert_eq!(scheduler.budget().remaining_total(), 1);
+}
+
+#[test]
 fn invalid_custom_policy_forks_are_rejected_without_state_or_queue_changes() {
     let cases = [
         (

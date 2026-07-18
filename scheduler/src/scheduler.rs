@@ -176,7 +176,7 @@ impl Scheduler {
                     self.tree.mark_value_pending(*branch)?;
                     self.pending_external_values.insert(*branch);
                 }
-                self.outstanding_continuations.remove(branch);
+                self.remove_queued_continue(*branch);
                 let external_score_pending = self.scorer.is_none();
                 tree_budget_exhausted = outcome.tree_exhausted && !external_score_pending;
                 if outcome.tree_exhausted && external_score_pending {
@@ -192,7 +192,7 @@ impl Scheduler {
                 }
             }
             EngineEvent::BranchExhausted { branch } => {
-                self.outstanding_continuations.remove(branch);
+                self.remove_queued_continue(*branch);
                 self.pending_external_values.remove(branch);
                 self.pending_budget_terminals.remove(branch);
                 self.tree.finalize(*branch)?;
