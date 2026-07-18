@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 
 from conftest import MODEL_ID
 
@@ -54,6 +55,12 @@ async def test_tree_stream_terminal_events_and_usage_accounting(http_client):
     assert terminal == started
 
     token_events = [payload for event_type, payload in events if event_type == "token"]
+    assert all(math.isfinite(payload["logprob"]) for payload in token_events)
+    assert all(
+        payload["reason"]
+        for event_type, payload in events
+        if event_type == "branch_pruned"
+    )
     done = events[-1][1]
     assert done["usage"]["completion_tokens"] == len(token_events)
     assert done["usage"]["total_tokens"] == (

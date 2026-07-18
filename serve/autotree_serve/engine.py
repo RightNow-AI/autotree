@@ -76,19 +76,19 @@ except ModuleNotFoundError as error:
         branch_id: str
         token: str
         token_index: int
+        logprob: float
         type: Literal["token"] = field(default="token", init=False)
 
     @dataclass(frozen=True, slots=True)
     class BranchPruned:
         branch_id: str
-        score: float
+        reason: str
         type: Literal["branch_pruned"] = field(default="branch_pruned", init=False)
 
     @dataclass(frozen=True, slots=True)
     class BranchMerged:
         branch_id: str
         into_branch_id: str
-        score: float
         type: Literal["branch_merged"] = field(default="branch_merged", init=False)
 
     @dataclass(frozen=True, slots=True)
@@ -200,12 +200,16 @@ class DeterministicEngine:
             total_budget = request.max_tokens
 
         allocations = self._allocate_tokens(total_budget, branch_count)
-        branch_tokens = {
+        branch_samples = {
             branch_id: self._apply_stop_sequences(
                 self._sample_tokens(request, branch_id, allocations[index]),
                 request.stop,
             )
             for index, branch_id in enumerate(branch_ids)
+        }
+        branch_tokens = {
+            branch_id: [token for token, _logprob in branch_samples[branch_id]]
+            for branch_id in branch_ids
         }
         allocations = [len(branch_tokens[branch_id]) for branch_id in branch_ids]
         scores = {
@@ -232,6 +236,7 @@ class DeterministicEngine:
                     branch_id=branch_id,
                     token=tokens[token_index],
                     token_index=token_index,
+                    logprob=branch_samples[branch_id][token_index][1],
                 )
                 await asyncio.sleep(0)
 
@@ -244,11 +249,10 @@ class DeterministicEngine:
                 yield BranchMerged(
                     branch_id=branch_id,
                     into_branch_id=winner,
-                    score=scores[branch_id],
                 )
             else:
                 pruned_count += 1
-                yield BranchPruned(branch_id=branch_id, score=scores[branch_id])
+                yield BranchPruned(branch_id=branch_id, reason="lower_score")
 
         completion_tokens = sum(allocations)
         winner_text = "".join(branch_tokens[winner])
@@ -271,6 +275,7 @@ class DeterministicEngine:
                 },
                 final_scores=scores,
                 scorer=request.tree.scorer,
+                kv_reuse_ratio=logical_tokens / physical_tokens,
             )
 
         yield GenerationDone(
@@ -301,25 +306,40 @@ class DeterministicEngine:
         request: GenerationRequest,
         branch_id: str,
         count: int,
-    ) -> list[str]:
+    ) -> list[tuple[str, float]]:
         rng = random.Random(self._stable_seed(request, branch_id, "tokens"))
         candidate_count = max(1, math.ceil(len(self._VOCABULARY) * request.top_p))
         vocabulary = self._VOCABULARY[:candidate_count]
         words = [rng.choice(vocabulary) for _ in range(count)]
-        return [word if index == 0 else f" {word}" for index, word in enumerate(words)]
+        logprob = -math.log(candidate_count)
+        return [
+            (word if index == 0 else f" {word}", logprob)
+            for index, word in enumerate(words)
+        ]
 
     @staticmethod
-    def _apply_stop_sequences(tokens: list[str], stop: tuple[str, ...]) -> list[str]:
+    def _apply_stop_sequences(
+        samples: list[tuple[str, float]], stop: tuple[str, ...]
+    ) -> list[tuple[str, float]]:
         if not stop:
-            return tokens
-        text = "".join(tokens)
+            return samples
+        text = "".join(token for token, _logprob in samples)
         positions = [position for item in stop if (position := text.find(item)) >= 0]
         if not positions:
-            return tokens
-        truncated = text[: min(positions)]
-        if not truncated:
+            return samples
+        limit = min(positions)
+        if limit == 0:
             return []
-        return [truncated]
+        truncated: list[tuple[str, float]] = []
+        offset = 0
+        for token, logprob in samples:
+            if offset >= limit:
+                break
+            piece = token[: limit - offset]
+            if piece:
+                truncated.append((piece, logprob))
+            offset += len(token)
+        return truncated
 
     def _score_branch(
         self,

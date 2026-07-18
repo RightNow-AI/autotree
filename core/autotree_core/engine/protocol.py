@@ -55,13 +55,14 @@ class TokenGenerated:
     branch_id: str
     token: str
     token_index: int
+    logprob: float
     type: Literal["token"] = field(default="token", init=False)
 
 
 @dataclass(frozen=True, slots=True)
 class BranchPruned:
     branch_id: str
-    score: float
+    reason: str
     type: Literal["branch_pruned"] = field(default="branch_pruned", init=False)
 
 
@@ -69,7 +70,6 @@ class BranchPruned:
 class BranchMerged:
     branch_id: str
     into_branch_id: str
-    score: float
     type: Literal["branch_merged"] = field(default="branch_merged", init=False)
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+import math
 
 import httpx
 import pytest
@@ -88,6 +89,12 @@ async def test_official_openai_client_tree_completion_stream_usage(treekv_openai
     assert events[-1].type == "done"
     raw_events = [event.model_dump() for event in events]
     tokens = [event for event in raw_events if event["type"] == "token"]
+    assert all(math.isfinite(event["logprob"]) for event in tokens)
+    assert all(
+        event["reason"]
+        for event in raw_events
+        if event["type"] == "branch_pruned"
+    )
     done = raw_events[-1]
     assert done["usage"]["completion_tokens"] == len(tokens)
     assert sum(done["tree"]["tokens_spent_per_branch"].values()) == len(tokens)

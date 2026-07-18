@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -94,6 +95,10 @@ class EventAccumulator:
                     f"branch {event.branch_id} token_index must be {expected_index}, "
                     f"got {event.token_index}"
                 )
+            if not math.isfinite(event.logprob):
+                raise EngineContractError(
+                    f"branch {event.branch_id} emitted a non-finite token logprob"
+                )
             self.tokens[event.branch_id].append(event.token)
             self.next_token_index[event.branch_id] += 1
             self.token_count += 1
@@ -103,6 +108,10 @@ class EventAccumulator:
             self._terminate(event.branch_id)
             return
         if isinstance(event, BranchPruned):
+            if not event.reason:
+                raise EngineContractError(
+                    f"branch {event.branch_id} emitted an empty prune reason"
+                )
             self._terminate(event.branch_id)
             return
         if isinstance(event, GenerationDone):
@@ -116,6 +125,25 @@ class EventAccumulator:
                     f"usage={event.usage.completion_tokens}, events={self.token_count}"
                 )
             if event.tree_summary is not None:
+                expected_kv_reuse_ratio = (
+                    event.counters.logical_tokens / event.counters.physical_tokens
+                    if event.counters.physical_tokens > 0
+                    else math.inf
+                )
+                if (
+                    not math.isfinite(event.tree_summary.kv_reuse_ratio)
+                    or event.tree_summary.kv_reuse_ratio < 1
+                    or not math.isclose(
+                        event.tree_summary.kv_reuse_ratio,
+                        expected_kv_reuse_ratio,
+                        rel_tol=1e-9,
+                        abs_tol=1e-12,
+                    )
+                ):
+                    raise EngineContractError(
+                        "tree summary kv_reuse_ratio must equal "
+                        "counters.logical_tokens / counters.physical_tokens and be >= 1"
+                    )
                 if event.tree_summary.branch_count != len(self.started):
                     raise EngineContractError(
                         "tree summary branch_count does not match branch_started events: "
