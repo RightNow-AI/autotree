@@ -130,6 +130,8 @@ parity at 8B and Triton validation; remote (AUTOTREE-001) lights up CI.
 
 ## WAVE 2 MERGED 2026-07-18 ~18:05: main `5397a2e` (5-branch train, zero conflicts; post-merge verify-local incl modeling ALL PASS + sdk 18/18). Wave 3 launched: engine-integration lane running (feat/treekv-engine, owns core engine + serve wiring + final_scores fix); thoughtbench lane queued on capacity (feat/thoughtbench, fixture-only harness). Then: core-review rerun, GPU box (AUTOTREE-002) for 8B parity + Triton, remote (AUTOTREE-001) for CI.
 
+## CPU-COMPLETE 2026-07-19 ~02:00: main `2d592f1` carries the full blueprint CPU surface: Tree-KV engine, kernels (reference+Triton-unvalidated), hardened scheduler, OpenAI-compatible serving w/ live playground, SDK w/ contract-tested wire, thoughtbench, leaderboard, docs+Dockerfile, 7-figure pipeline, CI. Audit Wave A done except serve-ops lane (running). Next: GPU box (AUTOTREE-002) unlocks parity@8B + Triton + real numbers (audit Wave B: forest batching, SGLang TreeRadix); remote (AUTOTREE-001) lights CI.
+
 ## Next session
 
 Read this file, check the four job ids, gate each lane's diff (companion
