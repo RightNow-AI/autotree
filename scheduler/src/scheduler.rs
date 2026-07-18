@@ -544,8 +544,8 @@ mod tests {
             })
             .unwrap();
 
-        let result: Result<(), &str> = scheduler
-            .try_convert_pending_commands(|_| Err("injected allocation failure"));
+        let result: Result<(), &str> =
+            scheduler.try_convert_pending_commands(|_| Err("injected allocation failure"));
 
         assert_eq!(result, Err("injected allocation failure"));
         assert_eq!(

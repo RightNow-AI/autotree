@@ -393,11 +393,7 @@ fn invalid_custom_policy_forks_are_rejected_without_state_or_queue_changes() {
             u32::MAX,
             SchedulerError::InvalidWidth(u32::MAX),
         ),
-        (
-            BranchId(0),
-            1,
-            SchedulerError::PolicyCommandTreeMismatch,
-        ),
+        (BranchId(0), 1, SchedulerError::PolicyCommandTreeMismatch),
     ];
 
     for (branch, width, expected) in cases {
@@ -416,7 +412,14 @@ fn invalid_custom_policy_forks_are_rejected_without_state_or_queue_changes() {
 
         assert_eq!(result, Err(expected));
         assert_eq!(scheduler.tree().len(), 1);
-        assert_eq!(scheduler.tree().get(BranchId(0)).unwrap().tokens_generated(), 0);
+        assert_eq!(
+            scheduler
+                .tree()
+                .get(BranchId(0))
+                .unwrap()
+                .tokens_generated(),
+            0
+        );
         assert_eq!(scheduler.budget().total_consumed(), 0);
         assert!(scheduler.poll_commands().is_empty());
     }

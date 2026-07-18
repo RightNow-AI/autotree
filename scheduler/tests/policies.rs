@@ -378,12 +378,12 @@ fn best_first_respects_the_exact_max_depth_boundary() {
 
 #[test]
 fn best_first_normalizes_signed_zero_before_logprob_tie_breaking() {
-    let mut scheduler = Scheduler::with_external_values(scheduler_config(
-        PolicyConfig::BestFirst(BestFirstConfig {
+    let mut scheduler = Scheduler::with_external_values(scheduler_config(PolicyConfig::BestFirst(
+        BestFirstConfig {
             expansion_width: 2,
             max_depth: 1,
-        }),
-    ))
+        },
+    )))
     .unwrap();
 
     scheduler
@@ -401,10 +401,7 @@ fn best_first_normalizes_signed_zero_before_logprob_tie_breaking() {
         .unwrap();
     let _ = scheduler.poll_commands();
 
-    for (branch, logprob, score) in [
-        (BranchId(1), 0.0, -0.0),
-        (BranchId(2), -1.0, 0.0),
-    ] {
+    for (branch, logprob, score) in [(BranchId(1), 0.0, -0.0), (BranchId(2), -1.0, 0.0)] {
         scheduler
             .feed_event(EngineEvent::TokenSampled {
                 branch,

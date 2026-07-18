@@ -49,7 +49,10 @@ impl fmt::Display for SchedulerError {
                 branch.0
             ),
             Self::PolicyCommandTreeMismatch => {
-                write!(formatter, "policy commands do not match policy tree mutations")
+                write!(
+                    formatter,
+                    "policy commands do not match policy tree mutations"
+                )
             }
             Self::CounterOverflow(field) => write!(formatter, "{field} overflowed"),
         }
