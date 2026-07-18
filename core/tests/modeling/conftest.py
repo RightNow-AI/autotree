@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -8,6 +9,35 @@ import torch
 from transformers import GPT2Config, GPT2LMHeadModel
 
 from autotree_core.modeling import ModelExecutor, ModelExecutorConfig
+
+
+def _model_parameters() -> tuple[pytest.ParameterSet, ...]:
+    configured = os.environ.get("AUTOTREE_TEST_MODEL_IDS")
+    model_ids = (
+        tuple(model_id.strip() for model_id in configured.split(",") if model_id.strip())
+        if configured
+        else ("tiny", "gpt2")
+    )
+    if not model_ids:
+        raise ValueError("AUTOTREE_TEST_MODEL_IDS must contain at least one model id")
+    return tuple(
+        pytest.param(model_id, id=model_id.replace("/", "--"))
+        for model_id in model_ids
+    )
+
+
+def _test_dtype() -> torch.dtype:
+    name = os.environ.get("AUTOTREE_TEST_DTYPE", "float32")
+    try:
+        return {
+            "float32": torch.float32,
+            "float16": torch.float16,
+            "bfloat16": torch.bfloat16,
+        }[name]
+    except KeyError:
+        raise ValueError(
+            "AUTOTREE_TEST_DTYPE must be float32, float16, or bfloat16"
+        ) from None
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,18 +74,15 @@ def tiny_model_id(tmp_path_factory: pytest.TempPathFactory) -> str:
 
 @pytest.fixture(
     scope="session",
-    params=(
-        pytest.param("tiny", id="tiny-random-gpt2"),
-        pytest.param("gpt2", id="gpt2-124m"),
-    ),
+    params=_model_parameters(),
 )
 def model_case(request: pytest.FixtureRequest, tiny_model_id: str) -> ModelCase:
     name = str(request.param)
-    model_id = tiny_model_id if name == "tiny" else "gpt2"
+    model_id = tiny_model_id if name == "tiny" else name
     config = ModelExecutorConfig(
         model_id=model_id,
-        device="cpu",
-        dtype=torch.float32,
+        device=os.environ.get("AUTOTREE_TEST_DEVICE", "cpu"),
+        dtype=_test_dtype(),
         page_size=4,
         capacity_pages=32,
         local_files_only=name == "tiny",
@@ -63,9 +90,7 @@ def model_case(request: pytest.FixtureRequest, tiny_model_id: str) -> ModelCase:
     try:
         executor = ModelExecutor(config)
     except OSError as error:
-        if name == "gpt2":
-            pytest.fail(f"required gpt2 download/load failed: {error}")
-        raise
+        pytest.fail(f"required model download/load failed for {model_id}: {error}")
     return ModelCase(
         name=name,
         model_id=model_id,
