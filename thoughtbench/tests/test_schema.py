@@ -27,5 +27,5 @@ def test_schema_rejects_a_payload_without_fixture_honesty_stamp() -> None:
 def test_schema_can_be_serialized_for_downstream_consumers() -> None:
     rendered = json.dumps(results_json_schema())
 
-    assert "thoughtbench.results.v1" in rendered
+    assert "thoughtbench.results.v2" in rendered
     assert "artifact_notice" in rendered

@@ -14,16 +14,26 @@ from autotree_sdk import (
     TreeSummary,
     Usage,
 )
+from autotree_sdk.models import EngineCounters
 
 
-def test_token_indices_must_strictly_increase() -> None:
+COUNTERS = EngineCounters(
+    logical_tokens=1,
+    physical_tokens=1,
+    useful_tokens=1,
+    elapsed_seconds=0.01,
+    ttft_seconds=0.001,
+)
+
+
+def test_token_indices_must_start_at_zero_and_be_contiguous() -> None:
     assembler = TraceAssembler("prompt")
     assembler.add(BranchStartedEvent(branch_id="root"))
-    assembler.add(TokenEvent(branch_id="root", token_index=1, token="a", logprob=-0.1))
+    assembler.add(TokenEvent(branch_id="root", token_index=0, token="a", logprob=-0.1))
 
-    with pytest.raises(TraceInvariantError, match="non_increasing_token_index"):
+    with pytest.raises(TraceInvariantError, match="invalid_token_index"):
         assembler.add(
-            TokenEvent(branch_id="root", token_index=1, token="b", logprob=-0.2)
+            TokenEvent(branch_id="root", token_index=2, token="b", logprob=-0.2)
         )
 
 
@@ -45,12 +55,21 @@ def test_merged_branch_records_destination_and_terminal_state() -> None:
     assembler.add(BranchMergedEvent(branch_id="alt", into_branch_id="root"))
     assembler.add(
         DoneEvent(
+            branch_id="root",
+            text="",
+            finish_reason="length",
             usage=Usage(prompt_tokens=1, completion_tokens=0, total_tokens=1),
+            counters=COUNTERS,
             tree=TreeSummary(
+                policy="beam",
                 branch_count=2,
                 pruned_count=0,
+                merged_count=1,
+                winner_branch_id="root",
                 tokens_spent_per_branch={"root": 0, "alt": 0},
                 final_scores={"root": 1.0, "alt": 1.0},
+                scorer=None,
+                kv_reuse_ratio=1.0,
             ),
         )
     )
@@ -68,9 +87,8 @@ def valid_event_streams(draw):
     token_counts = draw(
         st.lists(st.integers(min_value=0, max_value=5), min_size=branch_count, max_size=branch_count)
     )
-    pruned = draw(
-        st.lists(st.booleans(), min_size=branch_count, max_size=branch_count)
-    )
+    winner_index = draw(st.integers(min_value=0, max_value=branch_count - 1))
+    pruned = [index != winner_index for index in range(branch_count)]
     states = []
     for index, token_count in enumerate(token_counts):
         branch_id = f"b{index}"
@@ -78,7 +96,7 @@ def valid_event_streams(draw):
         actions.extend(
             TokenEvent(
                 branch_id=branch_id,
-                token_index=token_index * 2,
+                token_index=token_index,
                 token=f"{index}:{token_index}",
                 logprob=-float(token_index + 1),
             )
@@ -95,20 +113,32 @@ def valid_event_streams(draw):
         ordered.append(states[selected].pop(0))
 
     summary = TreeSummary(
+        policy="beam",
         branch_count=branch_count,
         pruned_count=sum(pruned),
+        merged_count=0,
+        winner_branch_id=f"b{winner_index}",
         tokens_spent_per_branch={
             f"b{index}": token_count for index, token_count in enumerate(token_counts)
         },
         final_scores={f"b{index}": float(index) for index in range(branch_count)},
+        scorer=None,
+        kv_reuse_ratio=1.0,
     )
     ordered.append(
         DoneEvent(
+            branch_id=f"b{winner_index}",
+            text="".join(
+                f"{winner_index}:{token_index}"
+                for token_index in range(token_counts[winner_index])
+            ),
+            finish_reason="length",
             usage=Usage(
                 prompt_tokens=3,
                 completion_tokens=sum(token_counts),
                 total_tokens=3 + sum(token_counts),
             ),
+            counters=COUNTERS,
             tree=summary,
         )
     )

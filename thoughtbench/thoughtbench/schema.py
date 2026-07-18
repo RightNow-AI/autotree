@@ -19,7 +19,7 @@ def results_json_schema() -> dict[str, Any]:
 
 
 def validate_results_payload(payload: dict[str, Any]) -> None:
-    """Validate a serialized payload against the public v1 schema."""
+    """Validate a serialized payload against the current public schema."""
 
     schema = results_json_schema()
     Draft202012Validator.check_schema(schema)

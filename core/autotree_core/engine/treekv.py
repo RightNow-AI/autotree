@@ -205,6 +205,7 @@ class TreeKVEngine:
                 branch_id=self._branch_name(branch_id),
                 token=token,
                 token_index=token_index,
+                logprob=logprob,
             )
 
         yield await advance(execution.root_id)
@@ -263,7 +264,7 @@ class TreeKVEngine:
                 pruned_count += 1
                 yield BranchPruned(
                     branch_id=self._branch_name(branch_id),
-                    score=scores[branch_id],
+                    reason=str(command.get("reason") or "scheduler_pruned"),
                 )
                 continue
             if command_type == "finalize":
@@ -288,7 +289,7 @@ class TreeKVEngine:
             pruned_count += 1
             yield BranchPruned(
                 branch_id=self._branch_name(branch_id),
-                score=scores[branch_id],
+                reason="not_selected",
             )
 
         ended_at = time.perf_counter()

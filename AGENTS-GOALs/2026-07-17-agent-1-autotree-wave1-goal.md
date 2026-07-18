@@ -137,3 +137,46 @@ adversarial-review for the kernel and the EngineProtocol seam), fold
 reported spec changes into `tree-kv-spec.md`, then merge train on founder
 word. After wave 1: correctness-harness lane (bit-parity vs sequential on a
 real 8B on the GPU box), then ThoughtBench (Phase 3).
+
+## WIRE CONTRACT COMPLETE 2026-07-19 00:30 +03:00
+
+Lane `fix/wire-contract` completed locally with no push and no configured
+remote/upstream:
+
+- `df878c7` pinned the real serve-to-SDK stream contract, fork-prefix exports,
+  and the core `kv_reuse_ratio >= 1` metric behavior red-first.
+- `ff9274e` added finite sampled-token `logprob` and prune `reason` fields to
+  deterministic and TreeKV event emission and server validation.
+- `04072ea` made GRPO and RLHF exports reconstruct complete root-to-leaf token
+  paths and made the SDK parser enforce the full branch-keyed summary contract.
+- `c5f1c3a` moved ThoughtBench to `thoughtbench.results.v2`, accepts the core
+  logical/physical KV multiplier, and reads it from the typed tree summary.
+- `6c39351` added the normative `core/docs/wire-spec.md` v1 contract.
+- `e8e242e` added separate SDK, real cross-package wire, and ThoughtBench CI
+  jobs plus matching PowerShell and shell local-verification gates.
+- `3940a6d` closed a manual-review gap by reconciling prune/merge counts and
+  rejecting invalid counters and non-finite final scores server-side.
+
+Verification on the final implementation:
+
+- `scripts/verify-local.ps1`: PASS for core (`135 passed, 45 skipped`), all
+  scheduler fmt/clippy/test/python-feature gates, serve (`30 passed, 3 skipped`
+  without the optional scheduler wheel), SDK unit (`19 passed`), real
+  serve-to-SDK contract (`1 passed`), ThoughtBench (`34 passed`), and workflow
+  YAML parsing.
+- Scheduler release wheel built with maturin and installed into the serve env;
+  the complete serve suite then passed `33 passed`, including `3 passed` real
+  GPT-2 TreeKV tests. The complete SDK suite passed `20 passed` and ThoughtBench
+  passed `34 passed`.
+- Captured raw TreeKV SSE contained finite token logprobs
+  `-1.0208925008773804`, `-0.5032301545143127`,
+  `-0.5032301545143127`, and `-0.29521721601486206`; prune reasons were present;
+  done usage reported 4 completion tokens for 4 token events; counters were
+  logical 33 / physical 12 and `kv_reuse_ratio` was 2.75.
+- External CodeRabbit review was unavailable because the CLI is not installed.
+  Manual full-range review found the terminal-summary validation gap above;
+  its pins failed `2 failed, 7 passed` before the fix and passed `9 passed`
+  afterward.
+
+Remaining gaps: the optional modeling gate was not requested and remained
+skipped in verify-local; no push, remote sync, deployment, or GPU claim was made.

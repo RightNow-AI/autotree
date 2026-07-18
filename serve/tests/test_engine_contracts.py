@@ -87,7 +87,12 @@ async def test_non_monotonic_token_indices_return_honest_500(indices: list[int])
     tokens = ["a", "b", "c"][: len(indices)]
     events: list[EngineEvent] = [BranchStarted(branch_id="branch-0", parent_id=None)]
     events.extend(
-        TokenGenerated(branch_id="branch-0", token=token, token_index=index)
+        TokenGenerated(
+            branch_id="branch-0",
+            token=token,
+            token_index=index,
+            logprob=-0.1,
+        )
         for token, index in zip(tokens, indices, strict=True)
     )
     events.append(
@@ -120,7 +125,9 @@ async def test_tree_summary_branch_token_mismatch_returns_honest_500():
     response = await post_script(
         [
             BranchStarted(branch_id="branch-0", parent_id=None),
-            TokenGenerated(branch_id="branch-0", token="a", token_index=0),
+            TokenGenerated(
+                branch_id="branch-0", token="a", token_index=0, logprob=-0.1
+            ),
             done_event(
                 branch_id="branch-0",
                 text="a",
@@ -150,7 +157,9 @@ async def test_tree_summary_final_scores_are_keyed_by_every_branch_id():
     response = await post_script(
         [
             BranchStarted(branch_id="branch-0", parent_id=None),
-            TokenGenerated(branch_id="branch-0", token="a", token_index=0),
+            TokenGenerated(
+                branch_id="branch-0", token="a", token_index=0, logprob=-0.1
+            ),
             done_event(
                 branch_id="branch-0",
                 text="a",
@@ -166,13 +175,71 @@ async def test_tree_summary_final_scores_are_keyed_by_every_branch_id():
     assert "final_scores" in error["message"]
 
 
+async def test_tree_summary_terminal_counts_reconcile_with_events():
+    summary = TreeSummary(
+        policy="beam",
+        branch_count=2,
+        pruned_count=0,
+        merged_count=0,
+        winner_branch_id="branch-0",
+        tokens_spent_per_branch={"branch-0": 0, "branch-1": 0},
+        final_scores={"branch-0": 1.0, "branch-1": 0.0},
+        scorer=None,
+    )
+    response = await post_script(
+        [
+            BranchStarted(branch_id="branch-0", parent_id=None),
+            BranchStarted(branch_id="branch-1", parent_id="branch-0"),
+            BranchPruned(branch_id="branch-1", reason="lower_score"),
+            done_event(
+                branch_id="branch-0",
+                text="",
+                completion_tokens=0,
+                tree_summary=summary,
+            ),
+        ]
+    )
+
+    assert response.status_code == 500
+    assert "pruned_count" in response.json()["error"]["message"]
+
+
+async def test_tree_summary_rejects_non_finite_final_scores():
+    summary = TreeSummary(
+        policy="beam",
+        branch_count=1,
+        pruned_count=0,
+        merged_count=0,
+        winner_branch_id="branch-0",
+        tokens_spent_per_branch={"branch-0": 0},
+        final_scores={"branch-0": float("nan")},
+        scorer=None,
+    )
+    response = await post_script(
+        [
+            BranchStarted(branch_id="branch-0", parent_id=None),
+            done_event(
+                branch_id="branch-0",
+                text="",
+                completion_tokens=0,
+                tree_summary=summary,
+            ),
+        ]
+    )
+
+    assert response.status_code == 500
+    assert "final_scores" in response.json()["error"]["message"]
+
+
 @pytest.mark.parametrize(
     "events, invalid_relationship",
     [
         pytest.param(
             [
                 BranchStarted(branch_id="child", parent_id="missing"),
-                TokenGenerated(branch_id="child", token="a", token_index=0),
+                TokenGenerated(
+                    branch_id="child", token="a", token_index=0, logprob=-0.1
+                ),
                 done_event(branch_id="child", text="a", completion_tokens=1),
             ],
             "parent_id",
@@ -182,7 +249,7 @@ async def test_tree_summary_final_scores_are_keyed_by_every_branch_id():
             [
                 BranchStarted(branch_id="branch-0", parent_id=None),
                 BranchStarted(branch_id="branch-1", parent_id="branch-0"),
-                BranchMerged(branch_id="branch-1", into_branch_id="missing", score=0.1),
+                BranchMerged(branch_id="branch-1", into_branch_id="missing"),
                 done_event(branch_id="branch-0", text="", completion_tokens=0),
             ],
             "into_branch_id",
@@ -193,8 +260,8 @@ async def test_tree_summary_final_scores_are_keyed_by_every_branch_id():
                 BranchStarted(branch_id="branch-0", parent_id=None),
                 BranchStarted(branch_id="branch-1", parent_id="branch-0"),
                 BranchStarted(branch_id="branch-2", parent_id="branch-0"),
-                BranchPruned(branch_id="branch-0", score=0.2),
-                BranchMerged(branch_id="branch-1", into_branch_id="branch-0", score=0.1),
+                BranchPruned(branch_id="branch-0", reason="lower_score"),
+                BranchMerged(branch_id="branch-1", into_branch_id="branch-0"),
                 done_event(branch_id="branch-2", text="", completion_tokens=0),
             ],
             "into_branch_id",

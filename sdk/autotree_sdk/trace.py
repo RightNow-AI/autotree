@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 from .errors import TraceInvariantError
 from .models import (
     BranchMergedEvent,
@@ -94,10 +96,11 @@ class TraceAssembler:
 
     def _token(self, event: TokenEvent) -> None:
         branch = self._known_live(event.branch_id, event.type)
-        if branch.token_indices and event.token_index <= branch.token_indices[-1]:
+        expected_index = len(branch.token_indices)
+        if event.token_index != expected_index:
             raise TraceInvariantError(
-                "non_increasing_token_index",
-                f"received {event.token_index} after {branch.token_indices[-1]}",
+                "invalid_token_index",
+                f"expected {expected_index}, received {event.token_index}",
                 branch_id=event.branch_id,
             )
         branch.token_indices.append(event.token_index)
@@ -136,11 +139,30 @@ class TraceAssembler:
                 "branch_count_mismatch",
                 f"summary={event.tree.branch_count}, observed={len(self._branches)}",
             )
+        winner = self._known_live(event.branch_id, event.type)
+        unterminated = sorted(
+            branch.branch_id
+            for branch in self._branches.values()
+            if branch.status == "live" and branch.branch_id != event.branch_id
+        )
+        if unterminated:
+            raise TraceInvariantError(
+                "unterminated_branches",
+                f"branches lack terminal events: {', '.join(unterminated)}",
+            )
         pruned_count = sum(branch.pruned for branch in self._branches.values())
         if event.tree.pruned_count != pruned_count:
             raise TraceInvariantError(
                 "pruned_count_mismatch",
                 f"summary={event.tree.pruned_count}, observed={pruned_count}",
+            )
+        merged_count = sum(
+            branch.status == "merged" for branch in self._branches.values()
+        )
+        if event.tree.merged_count != merged_count:
+            raise TraceInvariantError(
+                "merged_count_mismatch",
+                f"summary={event.tree.merged_count}, observed={merged_count}",
             )
         observed_tokens = {
             branch_id: len(branch.tokens)
@@ -151,7 +173,45 @@ class TraceAssembler:
                 "branch_token_count_mismatch",
                 f"summary={event.tree.tokens_spent_per_branch}, observed={observed_tokens}",
             )
-        for branch in self._branches.values():
-            if branch.status == "live":
-                branch.status = "completed"
+        observed_branch_ids = set(self._branches)
+        if set(event.tree.final_scores) != observed_branch_ids:
+            raise TraceInvariantError(
+                "final_score_branch_mismatch",
+                "tree.final_scores must be keyed by every observed branch",
+            )
+        if event.tree.winner_branch_id != event.branch_id:
+            raise TraceInvariantError(
+                "winner_branch_mismatch",
+                f"tree winner={event.tree.winner_branch_id}, done branch={event.branch_id}",
+            )
+        if event.counters.physical_tokens <= 0:
+            raise TraceInvariantError(
+                "invalid_kv_reuse_ratio",
+                "done counters.physical_tokens must be positive",
+            )
+        expected_kv_reuse_ratio = (
+            event.counters.logical_tokens / event.counters.physical_tokens
+        )
+        if not math.isclose(
+            event.tree.kv_reuse_ratio,
+            expected_kv_reuse_ratio,
+            rel_tol=1e-9,
+            abs_tol=1e-12,
+        ):
+            raise TraceInvariantError(
+                "invalid_kv_reuse_ratio",
+                "tree.kv_reuse_ratio does not match logical/physical counters",
+            )
+        expected_text = "".join(
+            token
+            for branch_id in winner.branch_path
+            for token in self._branches[branch_id].tokens
+        )
+        if event.text != expected_text:
+            raise TraceInvariantError(
+                "winner_text_mismatch",
+                "done text does not match root-to-winner token events",
+                branch_id=event.branch_id,
+            )
+        winner.status = "completed"
         self._done = event

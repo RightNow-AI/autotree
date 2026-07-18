@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 import hashlib
 from importlib.metadata import PackageNotFoundError, version
 import json
+import math
 import os
 from pathlib import Path
 import platform
@@ -165,11 +166,17 @@ def _tree_stats(tree: Any) -> TreeStats:
 
 
 def _reported_ratio(source: Any, name: str) -> float | None:
-    extras = getattr(source, "model_extra", None) or {}
-    value = extras.get(name)
+    value = getattr(source, name, None)
+    if value is None:
+        extras = getattr(source, "model_extra", None) or {}
+        value = extras.get(name)
     if value is None:
         return None
     parsed = float(value)
+    if not math.isfinite(parsed):
+        return None
+    if name == "kv_reuse_ratio":
+        return parsed if parsed >= 1 else None
     return parsed if 0 <= parsed <= 1 else None
 
 
@@ -257,7 +264,7 @@ def _tree_completion(
         ended - started,
         None,
         _tree_stats(response.tree),
-        _reported_ratio(response, "kv_reuse_ratio"),
+        _reported_ratio(response.tree, "kv_reuse_ratio"),
         _reported_ratio(response, "useful_token_ratio"),
     )
 

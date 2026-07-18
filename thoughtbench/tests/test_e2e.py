@@ -122,6 +122,10 @@ def test_deterministic_engine_results_validate_end_to_end(
         assert all(sample.ttft_seconds is None for sample in results.samples)
         assert all(sample.tree is not None for sample in results.samples)
         assert all(sample.tree.branch_count == 3 for sample in results.samples if sample.tree)
+        assert all(
+            sample.kv_reuse_ratio is not None and sample.kv_reuse_ratio >= 1
+            for sample in results.samples
+        )
     report = render_report(config.output_path)
     assert FIXTURE_NOTICE in report
     assert mode in report

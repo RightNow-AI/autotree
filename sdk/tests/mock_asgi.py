@@ -191,10 +191,20 @@ class MockAutoTreeASGI:
             events.append(
                 {
                     "type": "done",
+                    "branch_id": "root",
+                    "text": "answer",
+                    "finish_reason": "length",
                     "usage": {
                         "prompt_tokens": 2,
                         "completion_tokens": completion_tokens,
                         "total_tokens": completion_tokens + 2,
+                    },
+                    "counters": {
+                        "logical_tokens": 5,
+                        "physical_tokens": 5,
+                        "useful_tokens": 2,
+                        "elapsed_seconds": 0.01,
+                        "ttft_seconds": 0.001,
                     },
                     "tree": self._summary(
                         payload,
@@ -224,11 +234,15 @@ class MockAutoTreeASGI:
             else scores
         )
         return {
+            "policy": payload.get("tree", {}).get("policy", "beam"),
             "branch_count": len(token_counts),
             "pruned_count": pruned_count,
+            "merged_count": 0,
+            "winner_branch_id": max(scores, key=scores.get),
             "tokens_spent_per_branch": token_counts,
             "final_scores": final_scores,
-            "policy": payload.get("tree", {}).get("policy"),
+            "scorer": payload.get("tree", {}).get("scorer"),
+            "kv_reuse_ratio": 1.0,
         }
 
     @staticmethod

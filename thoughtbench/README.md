@@ -2,7 +2,7 @@
 
 ThoughtBench is a fixture-first benchmark harness. The bundled tasks are tiny,
 synthetic contract fixtures; they are not AIME, GPQA, LiveCodeBench, or evidence
-for any performance, accuracy, or cost claim. Every v1 results artifact carries
+for any performance, accuracy, or cost claim. Every results artifact carries
 the stamp `FIXTURE TASKS ONLY - NOT A REAL BENCHMARK RESULT.` and disallows
 benchmark claims.
 
@@ -33,14 +33,15 @@ Run configuration is JSON. It fixes exactly three protocol seeds, one or more
 named token budgets, k samples per task, decoding settings, concurrency, pricing,
 and sequential or tree execution. A sibling append-only `.partial.jsonl` journal
 is fsynced after every sample and reused after interruption. The final JSON is
-validated against the versioned `thoughtbench.results.v1` JSON Schema before an
+validated against the versioned `thoughtbench.results.v2` JSON Schema before an
 atomic replace.
 
 `accuracy@k` means the fraction of tasks with at least one correct result in the
 first k samples. `pass_power_k` is the stricter fraction whose first k samples
 all pass. Requests for either metric raise if any task has fewer than k samples.
 
-Tree mode uses the SDK's typed `/v1/tree/completions` call. The current SDK/server
-non-stream response exposes usage and branch summaries but not TTFT, KV reuse, or
-useful-token counters, so those fields remain explicit `null`/zero-count metrics
-unless an endpoint reports them.
+Tree mode uses the SDK's typed `/v1/tree/completions` call. `kv_reuse_ratio` is
+the core logical-token count divided by the physical-token count and is therefore
+`>= 1`; ThoughtBench preserves that value without percentage-style clamping.
+TTFT and useful-token ratios remain explicit `null`/zero-count metrics unless an
+endpoint reports them.

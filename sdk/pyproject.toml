@@ -15,9 +15,13 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+  "autotree-serve",
   "hypothesis>=6.100,<7",
   "pytest>=8.2,<9",
 ]
+
+[tool.uv.sources]
+autotree-serve = { path = "../serve", editable = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["autotree_sdk"]

@@ -8,7 +8,7 @@ from typing import Literal
 from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, model_validator
 
 FIXTURE_NOTICE = "FIXTURE TASKS ONLY - NOT A REAL BENCHMARK RESULT."
-RESULTS_SCHEMA_VERSION = "thoughtbench.results.v1"
+RESULTS_SCHEMA_VERSION = "thoughtbench.results.v2"
 
 
 class StrictModel(BaseModel):
@@ -120,7 +120,7 @@ class SampleResult(StrictModel):
     ttft_seconds: float | None = Field(default=None, ge=0)
     tokens_per_second: float | None = Field(default=None, ge=0)
     rollout_throughput_per_hour: float | None = Field(default=None, ge=0)
-    kv_reuse_ratio: float | None = Field(default=None, ge=0, le=1)
+    kv_reuse_ratio: float | None = Field(default=None, ge=1)
     useful_token_ratio: float | None = Field(default=None, ge=0, le=1)
     tree: TreeStats | None = None
 

@@ -110,6 +110,47 @@ try {
         $results.Add([pscustomobject]@{ Name = "serve: tests"; Status = "SKIP (serve/ absent)" })
     }
 
+    Invoke-Gate "sdk: create Python 3.12 env" {
+        Push-Location sdk
+        try { Invoke-Native uv venv --python 3.12 --clear }
+        finally { Pop-Location }
+    }
+    Invoke-Gate "sdk: install test dependencies" {
+        Push-Location sdk
+        try {
+            Invoke-Native uv pip install -e . -e ../serve "hypothesis>=6.100,<7" "pytest>=8.2,<9"
+        }
+        finally { Pop-Location }
+    }
+    Invoke-Gate "sdk: unit tests" {
+        Push-Location sdk
+        try { Invoke-Native uv run --no-sync pytest -q --ignore=tests/test_server_contract.py }
+        finally { Pop-Location }
+    }
+    Invoke-Gate "wire: real serve + SDK contract" {
+        Push-Location sdk
+        try { Invoke-Native uv run --no-sync pytest -q tests/test_server_contract.py }
+        finally { Pop-Location }
+    }
+
+    Invoke-Gate "thoughtbench: create Python 3.12 env" {
+        Push-Location thoughtbench
+        try { Invoke-Native uv venv --python 3.12 --clear }
+        finally { Pop-Location }
+    }
+    Invoke-Gate "thoughtbench: install test dependencies" {
+        Push-Location thoughtbench
+        try {
+            Invoke-Native uv pip install -e . -e ../sdk -e ../serve "httpx>=0.28,<1" "pytest>=8.3,<9" "uvicorn>=0.34,<1"
+        }
+        finally { Pop-Location }
+    }
+    Invoke-Gate "thoughtbench: tests" {
+        Push-Location thoughtbench
+        try { Invoke-Native uv run --no-sync pytest -q }
+        finally { Pop-Location }
+    }
+
     Invoke-Gate "workflow YAML parse" {
         $code = "import pathlib,yaml; files=[pathlib.Path('.github/workflows/ci.yml'),pathlib.Path('.github/workflows/gpu-parity.yml')]; [yaml.safe_load(path.read_text(encoding='utf-8')) for path in files]; print('Parsed workflow YAML:', ', '.join(map(str, files)))"
         Invoke-Native uv run --with pyyaml python -c $code
