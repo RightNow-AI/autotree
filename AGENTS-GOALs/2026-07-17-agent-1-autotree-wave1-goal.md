@@ -82,6 +82,19 @@ gates fresh, commit green work early, stop honestly on host failure).
 Known token spend visible in finish markers: 191,479 + 371,485 (first
 attempts) + 295,876 (core-kv r3) + resumed-run totals in the r2 logs.
 
+## MERGED 2026-07-18 ~15:10 (founder word)
+
+Merge train on local `main`: `d7b6291` (core-kv) -> `8131125` (tree-attention)
+-> `f0406b2` (scheduler-rs). Zero file overlaps, zero conflicts. Post-merge
+gates run by orchestrator on main: Python `135 passed, 45 skipped` (kv +
+kernels, fresh uv env); cargo fmt --check + clippy -D warnings clean, 29
+tests 0 failed. Pre-merge mutation re-proof on tree-attention: off-by-one
+context_len -> `45 failed`, restored -> `62 passed, 45 skipped`. Merged
+worktrees removed; branches retained. No push (AUTOTREE-001: no remote yet).
+Remaining: serve-api lane building in `../AutoTree-serve-api` (first commit
+`9e77b2b` exists); on completion: orchestrator gate, merge on founder word,
+then wave 2 (correctness harness vs real 8B on GPU box, ThoughtBench).
+
 ## Next session
 
 Read this file, check the four job ids, gate each lane's diff (companion
