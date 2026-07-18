@@ -23,6 +23,7 @@ from .engine import (
     EngineProtocol,
     GenerationDone,
     GenerationRequest,
+    KVCapacityExceededError,
     Message,
     TokenGenerated,
     TreeExecution,
@@ -218,6 +219,19 @@ def create_app(
             message=f"Engine event contract violation: {exc}",
             error_type="server_error",
             code="engine_contract_error",
+        )
+
+    @app.exception_handler(KVCapacityExceededError)
+    async def kv_capacity_error_handler(
+        _request: Request,
+        exc: KVCapacityExceededError,
+    ) -> JSONResponse:
+        return _openai_error(
+            status_code=429,
+            message=str(exc),
+            param="kv_pages",
+            error_type="rate_limit_error",
+            code="kv_capacity_exhausted",
         )
 
     @app.middleware("http")
@@ -423,21 +437,26 @@ async def _chat_stream(
     if request.tree is not None:
         accumulator = EventAccumulator()
         done = None
-        async for event in engine.generate(request):
-            accumulator.accept(event)
-            metrics.observe_event(event)
-            if not isinstance(event, GenerationDone):
-                yield _sse_data(
-                    _chat_chunk(
-                        stream_id,
-                        created,
-                        request.model,
-                        choices=[],
-                        tree_event=_event_payload(event),
+        try:
+            async for event in engine.generate(request):
+                accumulator.accept(event)
+                metrics.observe_event(event)
+                if not isinstance(event, GenerationDone):
+                    yield _sse_data(
+                        _chat_chunk(
+                            stream_id,
+                            created,
+                            request.model,
+                            choices=[],
+                            tree_event=_event_payload(event),
+                        )
                     )
-                )
-                continue
-            done = event
+                    continue
+                done = event
+        except KVCapacityExceededError as error:
+            yield _sse_data(_capacity_error_event(error))
+            yield "data: [DONE]\n\n"
+            return
         if done is None:
             raise EngineContractError("engine stream ended without a done event")
         if done.text:
@@ -462,36 +481,45 @@ async def _chat_stream(
     else:
         accumulator = EventAccumulator()
         done = None
-        async for event in engine.generate(request):
-            accumulator.accept(event)
-            metrics.observe_event(event)
-            if isinstance(event, TokenGenerated):
-                yield _sse_data(
-                    _chat_chunk(
-                        stream_id,
-                        created,
-                        request.model,
-                        choices=[
-                            {
-                                "index": 0,
-                                "delta": {"content": event.token},
-                                "finish_reason": None,
-                            }
-                        ],
+        try:
+            async for event in engine.generate(request):
+                accumulator.accept(event)
+                metrics.observe_event(event)
+                if isinstance(event, TokenGenerated):
+                    yield _sse_data(
+                        _chat_chunk(
+                            stream_id,
+                            created,
+                            request.model,
+                            choices=[
+                                {
+                                    "index": 0,
+                                    "delta": {"content": event.token},
+                                    "finish_reason": None,
+                                }
+                            ],
+                        )
                     )
-                )
-            elif isinstance(event, GenerationDone):
-                done = event
-                yield _sse_data(
-                    _chat_chunk(
-                        stream_id,
-                        created,
-                        request.model,
-                        choices=[
-                            {"index": 0, "delta": {}, "finish_reason": event.finish_reason}
-                        ],
+                elif isinstance(event, GenerationDone):
+                    done = event
+                    yield _sse_data(
+                        _chat_chunk(
+                            stream_id,
+                            created,
+                            request.model,
+                            choices=[
+                                {
+                                    "index": 0,
+                                    "delta": {},
+                                    "finish_reason": event.finish_reason,
+                                }
+                            ],
+                        )
                     )
-                )
+        except KVCapacityExceededError as error:
+            yield _sse_data(_capacity_error_event(error))
+            yield "data: [DONE]\n\n"
+            return
         if done is None:
             raise EngineContractError("engine stream ended without a done event")
 
@@ -515,12 +543,23 @@ async def _tree_stream(
 ) -> AsyncIterator[str]:
     accumulator = EventAccumulator()
     saw_done = False
-    async for event in engine.generate(request):
-        accumulator.accept(event)
-        metrics.observe_event(event)
-        saw_done = saw_done or isinstance(event, GenerationDone)
-        payload = _event_payload(event)
-        yield f"event: {event.type}\ndata: {json.dumps(payload, separators=(',', ':'))}\n\n"
+    try:
+        async for event in engine.generate(request):
+            accumulator.accept(event)
+            metrics.observe_event(event)
+            saw_done = saw_done or isinstance(event, GenerationDone)
+            payload = _event_payload(event)
+            yield (
+                f"event: {event.type}\n"
+                f"data: {json.dumps(payload, separators=(',', ':'))}\n\n"
+            )
+    except KVCapacityExceededError as error:
+        payload = _capacity_error_event(error)
+        yield (
+            "event: error\n"
+            f"data: {json.dumps(payload, separators=(',', ':'))}\n\n"
+        )
+        return
     if not saw_done:
         raise EngineContractError("engine stream ended without a done event")
 
@@ -569,6 +608,18 @@ def _event_payload(event: EngineEvent) -> dict[str, object]:
 
 def _sse_data(payload: dict[str, object]) -> str:
     return f"data: {json.dumps(payload, separators=(',', ':'))}\n\n"
+
+
+def _capacity_error_event(error: KVCapacityExceededError) -> dict[str, object]:
+    return {
+        "type": "error",
+        "error": {
+            "message": str(error),
+            "type": "rate_limit_error",
+            "param": "kv_pages",
+            "code": "kv_capacity_exhausted",
+        },
+    }
 
 
 def _openai_error(

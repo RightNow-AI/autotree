@@ -7,12 +7,13 @@ import math
 import time
 from collections import deque
 from collections.abc import Callable
-from dataclasses import dataclass
-from typing import Any, Protocol
+from dataclasses import dataclass, replace
+from typing import Any, Literal, Protocol
 
 import torch
-from transformers import AutoTokenizer
+from transformers import AutoConfig, AutoTokenizer
 
+from autotree_core.kv import KVCapacityError
 from autotree_core.modeling import ModelExecution, ModelExecutor, ModelExecutorConfig
 
 from .protocol import (
@@ -22,6 +23,7 @@ from .protocol import (
     EngineUsage,
     GenerationDone,
     GenerationRequest,
+    KVCapacityExceededError,
     ModelMetadata,
     TokenGenerated,
     TreeSummary,
@@ -57,8 +59,28 @@ class TreeKVEngine:
         executor: ModelExecutor | None = None,
         tokenizer: Any | None = None,
         scheduler_factory: SchedulerFactory | None = None,
+        kv_pages: int | None = None,
+        kv_branch_headroom: float = 1.5,
     ) -> None:
-        self.executor = executor or ModelExecutor(ModelExecutorConfig(model_id=model_id))
+        if kv_pages is not None and (
+            isinstance(kv_pages, bool) or not isinstance(kv_pages, int) or kv_pages <= 0
+        ):
+            raise ValueError("kv_pages must be a positive integer or None")
+        if not math.isfinite(kv_branch_headroom) or kv_branch_headroom < 1.0:
+            raise ValueError("kv_branch_headroom must be finite and at least 1.0")
+        if executor is None:
+            executor_config = ModelExecutorConfig(model_id=model_id)
+            if kv_pages is None:
+                model_config = AutoConfig.from_pretrained(model_id)
+                context_tokens = self._model_context_tokens(model_config)
+                kv_pages = math.ceil(
+                    context_tokens
+                    / executor_config.page_size
+                    * kv_branch_headroom
+                )
+            executor_config = replace(executor_config, capacity_pages=kv_pages)
+            executor = ModelExecutor(executor_config)
+        self.executor = executor
         self.tokenizer = tokenizer or AutoTokenizer.from_pretrained(model_id)
         if scheduler_factory is None:
             try:
@@ -93,7 +115,20 @@ class TreeKVEngine:
             )
         started_at = time.perf_counter()
         prompt_ids = self._encode_prompt(request)
-        execution = self.executor.prefill(prompt_ids)
+        required_prompt_pages = math.ceil(
+            len(prompt_ids) / self.executor.config.page_size
+        )
+        if required_prompt_pages > self.executor.config.capacity_pages:
+            raise KVCapacityExceededError(
+                phase="admission",
+                required_pages=required_prompt_pages,
+                available_pages=self.executor.config.capacity_pages,
+                capacity_pages=self.executor.config.capacity_pages,
+            )
+        try:
+            execution = self.executor.prefill(prompt_ids)
+        except KVCapacityError as error:
+            raise self._capacity_error("admission", error) from error
         scheduler = self._scheduler_factory(self._scheduler_config(request))
         generator = torch.Generator(device=self.executor.config.device).manual_seed(
             request.seed if request.seed is not None else 0
@@ -126,7 +161,10 @@ class TreeKVEngine:
 
             logits = execution.next_logits(branch_id)
             token_id, logprob = self._sample(logits, request, generator)
-            self.executor.decode(execution, branch_id, token_id)
+            try:
+                self.executor.decode(execution, branch_id, token_id)
+            except KVCapacityError as error:
+                raise self._capacity_error("decode", error) from error
             token = self.tokenizer.decode(
                 [token_id],
                 skip_special_tokens=True,
@@ -305,6 +343,29 @@ class TreeKVEngine:
         if not token_ids:
             raise ValueError("tokenizer produced an empty prompt")
         return list(token_ids)
+
+    def _capacity_error(
+        self,
+        phase: Literal["admission", "decode"],
+        error: KVCapacityError,
+    ) -> KVCapacityExceededError:
+        return KVCapacityExceededError(
+            phase=phase,
+            required_pages=error.required_pages,
+            available_pages=error.available_pages,
+            capacity_pages=self.executor.config.capacity_pages,
+        )
+
+    @staticmethod
+    def _model_context_tokens(model_config: Any) -> int:
+        for field_name in ("max_position_embeddings", "n_positions", "n_ctx"):
+            value = getattr(model_config, field_name, None)
+            if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+                return value
+        raise ValueError(
+            "model config does not expose a positive context length through "
+            "max_position_embeddings, n_positions, or n_ctx; pass --kv-pages"
+        )
 
     @staticmethod
     def _branch_name(branch_id: int) -> str:

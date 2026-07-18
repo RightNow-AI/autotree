@@ -11,6 +11,7 @@ from autotree_core.engine import (
     BranchStarted,
     GenerationDone,
     GenerationRequest,
+    KVCapacityExceededError,
     Message,
     TokenGenerated,
     TreeExecution,
@@ -226,10 +227,9 @@ def test_mid_decode_capacity_exhaustion_is_promoted_to_engine_error(
     )
     generation_request = replace(request(), max_tokens=8, tree=None)
 
-    with pytest.raises(RuntimeError) as raised:
+    with pytest.raises(KVCapacityExceededError) as raised:
         asyncio.run(collect(engine, generation_request))
 
-    assert type(raised.value).__name__ == "KVCapacityExceededError"
     assert raised.value.phase == "decode"
     assert raised.value.required_pages == 1
     assert raised.value.available_pages == 0

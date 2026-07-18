@@ -43,6 +43,28 @@ class GenerationRequest:
     tree: TreeExecution | None
 
 
+class KVCapacityExceededError(RuntimeError):
+    """A foreseeable Tree-KV capacity limit at the engine boundary."""
+
+    def __init__(
+        self,
+        *,
+        phase: Literal["admission", "decode"],
+        required_pages: int,
+        available_pages: int,
+        capacity_pages: int,
+    ) -> None:
+        self.phase = phase
+        self.required_pages = required_pages
+        self.available_pages = available_pages
+        self.capacity_pages = capacity_pages
+        super().__init__(
+            f"Tree-KV {phase} requires {required_pages} page(s), but only "
+            f"{available_pages} are available within the {capacity_pages}-page limit. "
+            "Increase --kv-pages or reduce prompt/tree size."
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class BranchStarted:
     branch_id: str
@@ -149,6 +171,7 @@ __all__ = [
     "EngineUsage",
     "GenerationDone",
     "GenerationRequest",
+    "KVCapacityExceededError",
     "Message",
     "ModelMetadata",
     "TokenGenerated",
