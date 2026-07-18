@@ -64,6 +64,25 @@ tree_attention_decode(
   branch's path with standard causal masking inside the new span); a fused
   prefill kernel is Phase 1.5, not wave 1.
 
+## Branch scheduler engine contract (extracted from `scheduler/` v0.1, review-verified)
+
+- `BranchId` is u64; root is 0 and begins Active; IDs never reused; scheduler
+  construction emits no initial command (the engine bootstraps root decoding).
+- Engine -> scheduler events: `TokenSampled{branch,token,logprob}` (one token,
+  one total-budget unit; branch Active, logprob finite),
+  `BranchExhausted{branch}` (Active leaf -> Finalized),
+  `ValueScored{branch,score}` (external scorer mode only, after that branch's
+  TokenSampled; branch live, score finite; a branch awaiting a score cannot
+  accept another TokenSampled).
+- Scheduler -> engine commands: `ForkAt{branch,width}` (fork Active branch into
+  width children, parent -> Expanded), `Continue{branch}` (authorizes exactly
+  one decode step), `Kill{branch,reason}` (terminalize + immediate reclamation),
+  `Finalize{branch}`.
+- `KillReason`: beam_pruned | speculative_kill | branch_budget_exhausted |
+  tree_budget_exhausted.
+- Python event/command encoding: snake_case `type` field as in the Rust
+  crate's PyO3 layer (`token_sampled`, `fork_at`, ...).
+
 ## Environment reality (both lanes)
 
 - The dev box is Windows, CPU-only. Triton does not import on Windows: gate
