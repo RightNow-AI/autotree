@@ -92,10 +92,12 @@ summary, plus `RolloutBranch` records with:
 meaning:
 
 - `prompt`: the original string or chat-message list.
-- `completion`: concatenated streamed token text.
+- `completion`: root-to-branch streamed token text, including every shared
+  prefix segment before the branch's own tokens.
 - `token_ids`: position-aligned `None` values until the wire carries IDs.
-- `token_indices`: server positions for the streamed token events.
-- `token_logprobs`: server logprob for each token event.
+- `token_indices`: branch-local server positions for the root-to-branch token
+  events, in path order.
+- `token_logprobs`: server logprob for every root-to-branch token event.
 - `cumulative_logprob`: sum of `token_logprobs`.
 - `branch_path`: root-to-current branch ID path.
 - `branch_id` / `parent_id`: direct branch identity and fork parent.
@@ -116,7 +118,6 @@ are complete GRPO-shaped sample dictionaries; `chosen_score` and
 are included by default because early rejection is useful preference data;
 merged branches are excluded.
 
-The wire contract names `final_scores` but does not define whether it is a
-branch-keyed object or positional array. The typed client accepts either shape.
-RLHF pair export requires a branch-keyed object and raises `ExportError` for a
-positional array or missing branch score instead of guessing branch identity.
+The wire contract requires `final_scores` to be keyed by branch ID. The typed
+client rejects positional arrays while parsing and raises `ExportError` if an
+export candidate is missing its branch score instead of guessing identity.

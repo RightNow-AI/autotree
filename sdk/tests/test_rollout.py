@@ -3,13 +3,13 @@ from __future__ import annotations
 import pytest
 
 from autotree_sdk import (
-    ExportError,
     RolloutBatch,
     RolloutBranch,
     RolloutTree,
     TreeClient,
     TreeSummary,
     Usage,
+    SSEParseError,
     rollout,
 )
 
@@ -68,23 +68,20 @@ def test_rollout_end_to_end_and_rl_exports() -> None:
     assert app.requests[0]["body"]["seed"] == 7
 
 
-def test_rlhf_export_rejects_positional_final_scores() -> None:
+def test_stream_parser_rejects_positional_final_scores() -> None:
     app = MockAutoTreeASGI()
     http_client = make_http_client(app)
     client = TreeClient("http://autotree.test", http_client=http_client)
     try:
-        batch = rollout(
-            ["prompt"],
-            2,
-            client=client,
-            scenario="positional_scores",
-        )
+        with pytest.raises(SSEParseError, match="invalid_tree_event"):
+            rollout(
+                ["prompt"],
+                2,
+                client=client,
+                scenario="positional_scores",
+            )
     finally:
         http_client.close()
-
-    assert batch.trees[0].tree_summary.final_scores == [0.9, 0.1]
-    with pytest.raises(ExportError, match="ambiguous_final_scores"):
-        batch.to_rlhf_pairs()
 
 
 def test_exports_reconstruct_forked_branch_full_path_completion() -> None:
@@ -115,10 +112,15 @@ def test_exports_reconstruct_forked_branch_full_path_completion() -> None:
                 branches=[root, leaf],
                 usage=Usage(prompt_tokens=1, completion_tokens=2, total_tokens=3),
                 tree_summary=TreeSummary(
+                    policy="beam",
                     branch_count=2,
                     pruned_count=0,
+                    merged_count=0,
+                    winner_branch_id="leaf",
                     tokens_spent_per_branch={"root": 1, "leaf": 1},
                     final_scores={"root": 0.1, "leaf": 0.9},
+                    scorer=None,
+                    kv_reuse_ratio=1.0,
                 ),
             )
         ]

@@ -4,15 +4,22 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from itertools import combinations
-from typing import Annotated, Any, Literal, TypeAlias
+from typing import Annotated, Any, Literal, Sequence, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    ValidationError,
+    model_validator,
+)
 
 from .errors import ExportError, SSEParseError
 
 TreePolicy: TypeAlias = Literal["beam", "best_first", "mcts"]
 Prompt: TypeAlias = str | list[dict[str, Any]]
-FinalScores: TypeAlias = dict[str, float] | list[float]
+NonNegativeInt: TypeAlias = Annotated[int, Field(ge=0)]
 
 
 class TreeParameters(BaseModel):
@@ -31,23 +38,29 @@ class Usage(BaseModel):
 
     prompt_tokens: int = Field(default=0, ge=0)
     completion_tokens: int = Field(ge=0)
-    total_tokens: int | None = Field(default=None, ge=0)
+    total_tokens: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def validate_total(self) -> "Usage":
+        if self.total_tokens != self.prompt_tokens + self.completion_tokens:
+            raise ValueError("total_tokens must equal prompt_tokens + completion_tokens")
+        return self
 
 
 class TreeSummary(BaseModel):
-    """Server summary for a completed tree execution.
+    """Server summary for a completed tree execution."""
 
-    The wire contract does not state whether ``final_scores`` is branch-keyed
-    or positional, so both JSON shapes are accepted. Preference export refuses
-    positional scores because branch identity cannot be inferred safely.
-    """
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
-    model_config = ConfigDict(extra="allow")
-
-    branch_count: int = Field(ge=0)
+    policy: str
+    branch_count: int = Field(ge=1)
     pruned_count: int = Field(ge=0)
-    tokens_spent_per_branch: dict[str, int]
-    final_scores: FinalScores
+    merged_count: int = Field(ge=0)
+    winner_branch_id: str
+    tokens_spent_per_branch: dict[str, NonNegativeInt]
+    final_scores: dict[str, float]
+    scorer: str | None
+    kv_reuse_ratio: float = Field(ge=1)
 
 
 class ChatMessage(BaseModel):
@@ -85,13 +98,17 @@ class TreeCompletionResponse(ChatCompletionResponse):
     tree: TreeSummary
 
 
-class BranchStartedEvent(BaseModel):
+class TreeEventModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+
+class BranchStartedEvent(TreeEventModel):
     type: Literal["branch_started"] = "branch_started"
     branch_id: str
     parent_id: str | None = None
 
 
-class TokenEvent(BaseModel):
+class TokenEvent(TreeEventModel):
     type: Literal["token"] = "token"
     branch_id: str
     token_index: int = Field(ge=0)
@@ -99,21 +116,33 @@ class TokenEvent(BaseModel):
     logprob: float
 
 
-class BranchPrunedEvent(BaseModel):
+class BranchPrunedEvent(TreeEventModel):
     type: Literal["branch_pruned"] = "branch_pruned"
     branch_id: str
-    reason: str
+    reason: str = Field(min_length=1)
 
 
-class BranchMergedEvent(BaseModel):
+class BranchMergedEvent(TreeEventModel):
     type: Literal["branch_merged"] = "branch_merged"
     branch_id: str
     into_branch_id: str
 
 
-class DoneEvent(BaseModel):
+class EngineCounters(TreeEventModel):
+    logical_tokens: int = Field(ge=0)
+    physical_tokens: int = Field(ge=0)
+    useful_tokens: int = Field(ge=0)
+    elapsed_seconds: float = Field(gt=0)
+    ttft_seconds: float = Field(ge=0)
+
+
+class DoneEvent(TreeEventModel):
     type: Literal["done"] = "done"
+    branch_id: str
+    text: str
+    finish_reason: Literal["stop", "length"]
     usage: Usage
+    counters: EngineCounters
     tree: TreeSummary
 
 
@@ -164,16 +193,29 @@ class RolloutBranch:
     def cumulative_logprob(self) -> float:
         return sum(self.token_logprobs)
 
-    def as_sample(self, prompt: Prompt, prompt_index: int) -> dict[str, Any]:
+    def as_sample(
+        self,
+        prompt: Prompt,
+        prompt_index: int,
+        *,
+        lineage: Sequence["RolloutBranch"] | None = None,
+    ) -> dict[str, Any]:
         """Return a flat, JSON-friendly sample shared by rollout exporters."""
 
+        path = tuple(lineage) if lineage is not None else (self,)
+        tokens = [token for branch in path for token in branch.tokens]
+        token_ids = [token_id for branch in path for token_id in branch.token_ids]
+        token_indices = [index for branch in path for index in branch.token_indices]
+        token_logprobs = [
+            logprob for branch in path for logprob in branch.token_logprobs
+        ]
         return {
             "prompt": prompt,
-            "completion": self.completion,
-            "token_ids": list(self.token_ids),
-            "token_indices": list(self.token_indices),
-            "token_logprobs": list(self.token_logprobs),
-            "cumulative_logprob": self.cumulative_logprob,
+            "completion": "".join(tokens),
+            "token_ids": token_ids,
+            "token_indices": token_indices,
+            "token_logprobs": token_logprobs,
+            "cumulative_logprob": sum(token_logprobs),
             "branch_path": list(self.branch_path),
             "branch_id": self.branch_id,
             "parent_id": self.parent_id,
@@ -200,6 +242,36 @@ class RolloutTree:
                 return branch
         raise KeyError(branch_id)
 
+    def lineage(self, branch: RolloutBranch) -> tuple[RolloutBranch, ...]:
+        """Resolve and validate a branch's root-to-leaf provenance path."""
+
+        if not branch.branch_path or branch.branch_path[-1] != branch.branch_id:
+            raise ExportError(
+                "invalid_branch_path",
+                f"branch {branch.branch_id!r} has an invalid branch_path",
+            )
+        try:
+            lineage = tuple(self.branch(branch_id) for branch_id in branch.branch_path)
+        except KeyError as exc:
+            raise ExportError(
+                "invalid_branch_path",
+                f"branch_path references unknown branch {exc.args[0]!r}",
+            ) from exc
+        for parent, child in zip(lineage, lineage[1:], strict=False):
+            if child.parent_id != parent.branch_id:
+                raise ExportError(
+                    "invalid_branch_path",
+                    f"branch {child.branch_id!r} does not descend from {parent.branch_id!r}",
+                )
+        return lineage
+
+    def as_sample(self, branch: RolloutBranch, prompt_index: int) -> dict[str, Any]:
+        return branch.as_sample(
+            self.prompt,
+            prompt_index,
+            lineage=self.lineage(branch),
+        )
+
 
 @dataclass(slots=True)
 class RolloutBatch:
@@ -225,7 +297,7 @@ class RolloutBatch:
                     continue
                 if branch.status == "merged" and not include_merged:
                     continue
-                samples.append(branch.as_sample(tree.prompt, prompt_index))
+                samples.append(tree.as_sample(branch, prompt_index))
         return samples
 
     def to_rlhf_pairs(self, *, include_pruned: bool = True) -> list[dict[str, Any]]:
@@ -240,12 +312,6 @@ class RolloutBatch:
         pairs: list[dict[str, Any]] = []
         for prompt_index, tree in enumerate(self.trees):
             scores = tree.tree_summary.final_scores
-            if not isinstance(scores, dict):
-                raise ExportError(
-                    "ambiguous_final_scores",
-                    "RLHF pairs require final_scores keyed by branch ID; "
-                    "the server returned a positional list",
-                )
             candidates = [
                 branch
                 for branch in tree.branches
@@ -273,8 +339,8 @@ class RolloutBatch:
                     {
                         "prompt": tree.prompt,
                         "prompt_index": prompt_index,
-                        "chosen": chosen.as_sample(tree.prompt, prompt_index),
-                        "rejected": rejected.as_sample(tree.prompt, prompt_index),
+                        "chosen": tree.as_sample(chosen, prompt_index),
+                        "rejected": tree.as_sample(rejected, prompt_index),
                         "chosen_score": scores[chosen.branch_id],
                         "rejected_score": scores[rejected.branch_id],
                     }
