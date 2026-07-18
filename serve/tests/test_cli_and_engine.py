@@ -20,10 +20,12 @@ def test_cli_help_is_honest_about_deterministic_engine(capsys):
     output = capsys.readouterr().out
     assert "seeded toy generator" in output
     assert "does not serve real model weights" in output
+    assert "--kv-pages" in output
+    assert "--kv-branch-headroom" in output
 
 
 def test_treekv_engine_model_load_failure_is_honest(capsys, monkeypatch):
-    def fail_load(_model_id):
+    def fail_load(_model_id, **_kwargs):
         raise OSError("weights unavailable")
 
     monkeypatch.setattr("autotree_serve.cli._load_treekv_engine", fail_load)
@@ -40,17 +42,36 @@ def test_cli_starts_treekv_server(monkeypatch):
     called = {}
     fake_engine = DeterministicEngine("gpt2")
 
-    monkeypatch.setattr(
-        "autotree_serve.cli._load_treekv_engine", lambda model_id: fake_engine
-    )
+    def fake_load(model_id, *, kv_pages, kv_branch_headroom):
+        called.update(
+            model_id=model_id,
+            kv_pages=kv_pages,
+            kv_branch_headroom=kv_branch_headroom,
+        )
+        return fake_engine
+
+    monkeypatch.setattr("autotree_serve.cli._load_treekv_engine", fake_load)
     monkeypatch.setattr(
         "autotree_serve.cli.uvicorn.run",
         lambda app, *, host, port: called.update(app=app, host=host, port=port),
     )
 
-    main(["serve", "--engine", "treekv"])
+    main(
+        [
+            "serve",
+            "--engine",
+            "treekv",
+            "--kv-pages",
+            "256",
+            "--kv-branch-headroom",
+            "2.0",
+        ]
+    )
 
     assert called["app"].state.engine is fake_engine
+    assert called["model_id"] == "gpt2"
+    assert called["kv_pages"] == 256
+    assert called["kv_branch_headroom"] == 2.0
     assert called["host"] == "127.0.0.1"
     assert called["port"] == 8000
 
