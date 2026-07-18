@@ -6,7 +6,13 @@ from dataclasses import dataclass
 import pytest
 import torch
 from hypothesis import settings, strategies as st
-from hypothesis.stateful import RuleBasedStateMachine, invariant, precondition, rule
+from hypothesis.stateful import (
+    RuleBasedStateMachine,
+    initialize,
+    invariant,
+    precondition,
+    rule,
+)
 
 from autotree_core.kv import (
     BranchHasChildrenError,
@@ -52,6 +58,7 @@ def payload_codes(
 
 SINGLE_TOKEN_PAYLOAD = payload_codes(min_tokens=1, max_tokens=1)
 MULTI_TOKEN_PAYLOAD = payload_codes(min_tokens=2, max_tokens=3)
+FULL_PAGE_PAYLOAD = payload_codes(min_tokens=PAGE_SIZE, max_tokens=PAGE_SIZE)
 
 
 def tensor_from_codes(codes: LayerCodes) -> torch.Tensor:
@@ -119,6 +126,49 @@ class TreeStateProperties(RuleBasedStateMachine):
             )
         }
         self.next_branch_id = self.tree.root_id + 1
+        self.positive_dedup_transitions = 0
+
+    @initialize(
+        payload=FULL_PAGE_PAYLOAD,
+        entrypoint=st.sampled_from(("tree", "pool")),
+    )
+    def require_positive_duplicate_dedup_transition(
+        self,
+        payload: PayloadCodes,
+        entrypoint: str,
+    ) -> None:
+        """Start every example by creating and reclaiming a duplicate page."""
+        k, v = tensors_from_payload(payload)
+        self.tree.append_tokens(self.tree.root_id, k, v)
+        self.append_to_mirror(self.tree.root_id, k, v)
+        self.tree.append_tokens(self.tree.root_id, k, v)
+        self.append_to_mirror(self.tree.root_id, k, v)
+        streams_before = tuple(
+            tuple(raw_bytes(tensor) for tensor in self.tree.gather(0, layer=layer))
+            for layer in range(NUM_LAYERS)
+        )
+        used_pages_before = self.pool.used_pages
+
+        freed = (
+            self.tree.dedup_scan() if entrypoint == "tree" else self.pool.dedup_scan()
+        )
+
+        assert used_pages_before == 2
+        assert freed == 1
+        assert self.pool.used_pages == 1
+        assert self.pool.refcount(self.tree.get_branch(0).block_table[0]) == 2
+        streams_after = tuple(
+            tuple(raw_bytes(tensor) for tensor in self.tree.gather(0, layer=layer))
+            for layer in range(NUM_LAYERS)
+        )
+        for actual_layer, expected_layer in zip(
+            streams_after,
+            streams_before,
+            strict=True,
+        ):
+            for actual, expected in zip(actual_layer, expected_layer, strict=True):
+                assert torch.equal(actual, expected)
+        self.positive_dedup_transitions += 1
 
     def draw_branch_id(self, data: st.DataObject, *, label: str) -> int:
         return data.draw(st.sampled_from(tuple(sorted(self.mirror))), label=label)
@@ -331,6 +381,7 @@ class TreeStateProperties(RuleBasedStateMachine):
 
     @invariant()
     def tree_matches_independent_dense_mirror(self) -> None:
+        assert self.positive_dedup_transitions == 1
         branches = self.tree.branches
         assert set(branches) == set(self.mirror)
 
