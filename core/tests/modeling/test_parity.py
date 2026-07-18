@@ -1,0 +1,127 @@
+from __future__ import annotations
+
+from collections import Counter
+
+import torch
+
+from .conftest import ModelCase
+
+
+def test_tree_fork_has_bit_parity_with_sequential_execution(
+    model_case: ModelCase,
+) -> None:
+    executor = model_case.executor
+    sequential = executor.prefill(model_case.prompt[:6])
+    tree = executor.prefill(model_case.prompt[:6])
+    child_id = executor.fork(tree, tree.root_id)
+
+    root_table = tree.tree.get_branch(tree.root_id).block_table
+    child_table = tree.tree.get_branch(child_id).block_table
+    assert root_table == child_table
+    for layer in range(executor.num_layers):
+        sequential_k, sequential_v = sequential.gather_kv(sequential.root_id, layer)
+        child_k, child_v = tree.gather_kv(child_id, layer)
+        assert torch.equal(child_k, sequential_k)
+        assert torch.equal(child_v, sequential_v)
+
+    for _ in range(3):
+        sequential_logits = sequential.next_logits(sequential.root_id)
+        tree_logits = tree.next_logits(child_id)
+        assert torch.equal(tree_logits, sequential_logits)
+        token_id = int(torch.argmax(sequential_logits).item())
+
+        sequential_step = executor.decode(sequential, sequential.root_id, token_id)
+        tree_step = executor.decode(tree, child_id, token_id)
+
+        assert torch.equal(tree_step.logits, sequential_step.logits)
+        for layer in range(executor.num_layers):
+            sequential_k, sequential_v = sequential.gather_kv(sequential.root_id, layer)
+            tree_k, tree_v = tree.gather_kv(child_id, layer)
+            assert torch.equal(tree_k, sequential_k)
+            assert torch.equal(tree_v, sequential_v)
+
+
+def test_greedy_tokens_equal_stock_huggingface_generate(
+    model_case: ModelCase,
+) -> None:
+    executor = model_case.executor
+    prompt = torch.tensor([model_case.prompt[:6]], dtype=torch.long)
+    attention_mask = torch.ones_like(prompt)
+    max_new_tokens = 4
+
+    actual = executor.generate(prompt, max_new_tokens=max_new_tokens)
+    pad_token_id = executor.model.generation_config.pad_token_id
+    if pad_token_id is None:
+        pad_token_id = executor.model.config.eos_token_id or 0
+    with torch.inference_mode():
+        expected = executor.model.generate(
+            prompt,
+            attention_mask=attention_mask,
+            do_sample=False,
+            max_new_tokens=max_new_tokens,
+            pad_token_id=pad_token_id,
+            use_cache=True,
+        )
+
+    assert torch.equal(actual.sequences.cpu(), expected.cpu())
+
+
+def test_seeded_sampling_is_repeatable_and_matches_hf_distribution(
+    model_case: ModelCase,
+) -> None:
+    executor = model_case.executor
+    prompt = torch.tensor([model_case.prompt[:6]], dtype=torch.long)
+
+    first = executor.generate(
+        prompt,
+        max_new_tokens=4,
+        do_sample=True,
+        seed=8675309,
+        top_k=5,
+    )
+    second = executor.generate(
+        prompt,
+        max_new_tokens=4,
+        do_sample=True,
+        seed=8675309,
+        top_k=5,
+    )
+    assert first.generated_ids == second.generated_ids
+
+    sample_count = 256
+    execution = executor.prefill(prompt)
+    logits = execution.next_logits(execution.root_id)
+    generator = torch.Generator(device="cpu").manual_seed(20260718)
+    autotree_samples = [
+        executor.sample_next_token(logits, generator=generator, top_k=5)
+        for _ in range(sample_count)
+    ]
+
+    batch_prompt = prompt.repeat(sample_count, 1)
+    torch.manual_seed(20260718)
+    pad_token_id = executor.model.generation_config.pad_token_id
+    if pad_token_id is None:
+        pad_token_id = executor.model.config.eos_token_id or 0
+    with torch.inference_mode():
+        hf_sequences = executor.model.generate(
+            batch_prompt,
+            attention_mask=torch.ones_like(batch_prompt),
+            do_sample=True,
+            top_k=5,
+            temperature=1.0,
+            max_new_tokens=1,
+            pad_token_id=pad_token_id,
+            use_cache=True,
+        )
+    hf_samples = hf_sequences[:, -1].tolist()
+
+    autotree_counts = Counter(autotree_samples)
+    hf_counts = Counter(hf_samples)
+    support = set(autotree_counts) | set(hf_counts)
+    total_variation = 0.5 * sum(
+        abs(autotree_counts[token] - hf_counts[token]) / sample_count
+        for token in support
+    )
+    assert len(autotree_counts) <= 5
+    assert len(hf_counts) <= 5
+    assert total_variation < 0.15
