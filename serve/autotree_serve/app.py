@@ -66,6 +66,8 @@ class EventAccumulator:
         self.tokens: dict[str, list[str]] = {}
         self.next_token_index: dict[str, int] = {}
         self.token_count = 0
+        self.pruned_count = 0
+        self.merged_count = 0
         self.finished = False
 
     def accept(self, event: EngineEvent) -> None:
@@ -106,6 +108,7 @@ class EventAccumulator:
         if isinstance(event, BranchMerged):
             self._validate_merge_target(event)
             self._terminate(event.branch_id)
+            self.merged_count += 1
             return
         if isinstance(event, BranchPruned):
             if not event.reason:
@@ -113,6 +116,7 @@ class EventAccumulator:
                     f"branch {event.branch_id} emitted an empty prune reason"
                 )
             self._terminate(event.branch_id)
+            self.pruned_count += 1
             return
         if isinstance(event, GenerationDone):
             self._terminate(event.branch_id)
@@ -124,6 +128,7 @@ class EventAccumulator:
                     "completion token usage does not match emitted token events: "
                     f"usage={event.usage.completion_tokens}, events={self.token_count}"
                 )
+            self._validate_done_counters(event)
             if event.tree_summary is not None:
                 expected_kv_reuse_ratio = (
                     event.counters.logical_tokens / event.counters.physical_tokens
@@ -149,6 +154,18 @@ class EventAccumulator:
                         "tree summary branch_count does not match branch_started events: "
                         f"summary={event.tree_summary.branch_count}, events={len(self.started)}"
                     )
+                if event.tree_summary.pruned_count != self.pruned_count:
+                    raise EngineContractError(
+                        "tree summary pruned_count does not match branch_pruned events: "
+                        f"summary={event.tree_summary.pruned_count}, "
+                        f"events={self.pruned_count}"
+                    )
+                if event.tree_summary.merged_count != self.merged_count:
+                    raise EngineContractError(
+                        "tree summary merged_count does not match branch_merged events: "
+                        f"summary={event.tree_summary.merged_count}, "
+                        f"events={self.merged_count}"
+                    )
                 emitted_per_branch = {
                     branch_id: len(self.tokens[branch_id])
                     for branch_id in sorted(self.started)
@@ -166,6 +183,13 @@ class EventAccumulator:
                         f"every branch: scores={sorted(score_branches)}, "
                         f"events={sorted(self.started)}"
                     )
+                if any(
+                    not math.isfinite(score)
+                    for score in event.tree_summary.final_scores.values()
+                ):
+                    raise EngineContractError(
+                        "tree summary final_scores must contain only finite values"
+                    )
                 if event.tree_summary.winner_branch_id != event.branch_id:
                     raise EngineContractError(
                         "tree summary winner_branch_id does not match done branch_id"
@@ -178,6 +202,22 @@ class EventAccumulator:
             if emitted_text != event.text:
                 raise EngineContractError("winning text does not match winner token events")
             self.finished = True
+
+    @staticmethod
+    def _validate_done_counters(event: GenerationDone) -> None:
+        if event.usage.prompt_tokens < 0:
+            raise EngineContractError("usage.prompt_tokens must be non-negative")
+        counters = event.counters
+        if counters.logical_tokens < 0:
+            raise EngineContractError("counters.logical_tokens must be non-negative")
+        if counters.physical_tokens < 0:
+            raise EngineContractError("counters.physical_tokens must be non-negative")
+        if counters.useful_tokens < 0:
+            raise EngineContractError("counters.useful_tokens must be non-negative")
+        if not math.isfinite(counters.elapsed_seconds) or counters.elapsed_seconds <= 0:
+            raise EngineContractError("counters.elapsed_seconds must be finite and positive")
+        if not math.isfinite(counters.ttft_seconds) or counters.ttft_seconds < 0:
+            raise EngineContractError("counters.ttft_seconds must be finite and non-negative")
 
     def _branch_path(self, branch_id: str) -> tuple[str, ...]:
         reversed_path: list[str] = []

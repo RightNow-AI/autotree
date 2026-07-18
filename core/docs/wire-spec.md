@@ -196,7 +196,7 @@ below:
 | `merged_count` | integer | Number of `branch_merged` events. |
 | `winner_branch_id` | string | MUST equal `done.branch_id`. |
 | `tokens_spent_per_branch` | object | Every branch ID mapped to its count of owned `token` events. |
-| `final_scores` | object | Every branch ID mapped to its final branch score. This is branch-keyed, never positional. |
+| `final_scores` | object | Every branch ID mapped to its finite final branch score. This is branch-keyed, never positional. |
 | `scorer` | string or null | Executed scorer identifier. |
 | `kv_reuse_ratio` | number | `logical_tokens / physical_tokens`; finite and at least 1. |
 
