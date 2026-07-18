@@ -39,6 +39,10 @@ dev = [
     { name = "pytest" },
     { name = "ruff" },
 ]
+engine = [
+    { name = "safetensors" },
+    { name = "transformers" },
+]
 modeling = [
     { name = "safetensors" },
     { name = "transformers" },
@@ -53,12 +57,14 @@ requires-dist = [
     { name = "numpy", specifier = ">=1.26" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
+    { name = "safetensors", marker = "extra == 'engine'", specifier = ">=0.4" },
     { name = "safetensors", marker = "extra == 'modeling'", specifier = ">=0.4" },
     { name = "torch", specifier = ">=2.4" },
+    { name = "transformers", marker = "extra == 'engine'", specifier = ">=4.44" },
     { name = "transformers", marker = "extra == 'modeling'", specifier = ">=4.44" },
     { name = "triton", marker = "sys_platform == 'linux' and extra == 'triton'", specifier = ">=3.0" },
 ]
-provides-extras = ["triton", "modeling", "dev"]
+provides-extras = ["triton", "modeling", "engine", "dev"]
 
 [[package]]
 name = "certifi"
