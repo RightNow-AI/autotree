@@ -1,10 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use rand::{SeedableRng, rngs::StdRng};
+use rand::SeedableRng;
 
 use crate::{
     BranchId, BranchState, BranchTree, BudgetController, Command, EngineEvent, KillReason,
-    LogprobScorer, Policy, PolicyConfig, SchedulerError, ValueScorer,
+    LogprobScorer, Policy, PolicyConfig, PolicyRng, SchedulerError, ValueScorer,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -28,7 +28,7 @@ pub struct Scheduler {
     budget: BudgetController,
     policy: Box<dyn Policy>,
     scorer: Option<Box<dyn ValueScorer>>,
-    rng: StdRng,
+    rng: PolicyRng,
     command_queue: VecDeque<Command>,
     outstanding_continuations: BTreeSet<BranchId>,
     pending_external_values: BTreeSet<BranchId>,
@@ -85,7 +85,7 @@ impl Scheduler {
             budget,
             policy,
             scorer,
-            rng: StdRng::seed_from_u64(config.seed),
+            rng: PolicyRng::seed_from_u64(config.seed),
             command_queue: VecDeque::new(),
             outstanding_continuations: BTreeSet::new(),
             pending_external_values: BTreeSet::new(),

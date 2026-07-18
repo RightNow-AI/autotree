@@ -4,6 +4,10 @@ use autotree_scheduler::{
 };
 
 fn scripted_mcts(seed: u64) -> Vec<Command> {
+    scripted_mcts_steps(seed, 128)
+}
+
+fn scripted_mcts_steps(seed: u64, steps: u32) -> Vec<Command> {
     let scorer = BiasedOracleScorer::new([(BranchId(1), 0.9), (BranchId(2), 0.1)], 0.5).unwrap();
     let mut scheduler = Scheduler::with_scorer(
         SchedulerConfig {
@@ -31,7 +35,7 @@ fn scripted_mcts(seed: u64) -> Vec<Command> {
     let mut batch = scheduler.poll_commands();
     let mut stream = batch.clone();
 
-    for token in 1..=128 {
+    for token in 1..=steps {
         let selected = batch
             .iter()
             .rev()
@@ -53,6 +57,91 @@ fn scripted_mcts(seed: u64) -> Vec<Command> {
     scheduler.drain().unwrap();
     stream.extend(scheduler.poll_commands());
     stream
+}
+
+#[test]
+fn fixed_seed_mcts_command_stream_matches_the_portable_golden() {
+    let expected = vec![
+        Command::ForkAt {
+            branch: BranchId(0),
+            width: 2,
+        },
+        Command::Continue {
+            branch: BranchId(2),
+        },
+        Command::ForkAt {
+            branch: BranchId(1),
+            width: 2,
+        },
+        Command::Continue {
+            branch: BranchId(4),
+        },
+        Command::Continue {
+            branch: BranchId(3),
+        },
+        Command::Continue {
+            branch: BranchId(3),
+        },
+        Command::ForkAt {
+            branch: BranchId(2),
+            width: 2,
+        },
+        Command::Continue {
+            branch: BranchId(5),
+        },
+        Command::Continue {
+            branch: BranchId(4),
+        },
+        Command::Continue {
+            branch: BranchId(6),
+        },
+        Command::Continue {
+            branch: BranchId(3),
+        },
+        Command::Continue {
+            branch: BranchId(5),
+        },
+        Command::Continue {
+            branch: BranchId(4),
+        },
+        Command::Continue {
+            branch: BranchId(6),
+        },
+        Command::Continue {
+            branch: BranchId(3),
+        },
+        Command::Continue {
+            branch: BranchId(5),
+        },
+        Command::Kill {
+            branch: BranchId(4),
+            reason: KillReason::Drained,
+        },
+        Command::Kill {
+            branch: BranchId(5),
+            reason: KillReason::Drained,
+        },
+        Command::Kill {
+            branch: BranchId(6),
+            reason: KillReason::Drained,
+        },
+        Command::Finalize {
+            branch: BranchId(3),
+        },
+        Command::Kill {
+            branch: BranchId(2),
+            reason: KillReason::Drained,
+        },
+        Command::Kill {
+            branch: BranchId(1),
+            reason: KillReason::Drained,
+        },
+        Command::Kill {
+            branch: BranchId(0),
+            reason: KillReason::Drained,
+        },
+    ];
+    assert_eq!(scripted_mcts_steps(0x5EED, 12), expected);
 }
 
 #[test]

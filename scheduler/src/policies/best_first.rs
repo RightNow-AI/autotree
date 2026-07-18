@@ -1,8 +1,6 @@
-use rand::rngs::StdRng;
-
 use crate::{
     BestFirstConfig, BranchId, BranchTree, Command, EngineEvent, MAX_BRANCH_WIDTH, Policy,
-    SchedulerError,
+    PolicyRng, SchedulerError,
 };
 
 #[derive(Clone, Debug)]
@@ -56,7 +54,7 @@ impl Policy for BestFirstPolicy {
         &mut self,
         _event: &EngineEvent,
         tree: &mut BranchTree,
-        _rng: &mut StdRng,
+        _rng: &mut PolicyRng,
     ) -> Result<Vec<Command>, SchedulerError> {
         let ranked = Self::ranked_frontier(tree);
         if ranked.is_empty() {

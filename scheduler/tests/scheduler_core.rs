@@ -1,9 +1,8 @@
 use autotree_scheduler::{
     BeamConfig, BestFirstConfig, BranchId, BranchState, BranchTree, Command, EngineEvent,
-    KillReason, LogprobScorer, MctsConfig, Policy, PolicyConfig, Scheduler, SchedulerConfig,
-    SchedulerError,
+    KillReason, LogprobScorer, MctsConfig, Policy, PolicyConfig, PolicyRng, Scheduler,
+    SchedulerConfig, SchedulerError,
 };
-use rand::rngs::StdRng;
 
 struct FailingPolicy;
 
@@ -17,7 +16,7 @@ impl Policy for FailingPolicy {
         &mut self,
         event: &EngineEvent,
         tree: &mut BranchTree,
-        _rng: &mut StdRng,
+        _rng: &mut PolicyRng,
     ) -> Result<Vec<Command>, SchedulerError> {
         tree.kill(event.branch(), KillReason::Drained)?;
         Err(SchedulerError::InvalidConfig("intentional policy failure"))
@@ -29,7 +28,7 @@ impl Policy for InvalidForkPolicy {
         &mut self,
         _event: &EngineEvent,
         _tree: &mut BranchTree,
-        _rng: &mut StdRng,
+        _rng: &mut PolicyRng,
     ) -> Result<Vec<Command>, SchedulerError> {
         Ok(vec![Command::ForkAt {
             branch: self.branch,

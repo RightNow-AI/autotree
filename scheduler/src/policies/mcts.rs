@@ -1,9 +1,28 @@
-use rand::{Rng, rngs::StdRng};
+use rand::RngCore;
 
 use crate::{
     BranchId, BranchState, BranchTree, Command, EngineEvent, MAX_BRANCH_WIDTH, MctsConfig, Policy,
-    SchedulerError,
+    PolicyRng, SchedulerError,
 };
+
+const UCT_RELATIVE_TOLERANCE: f64 = 1.0e-12;
+
+fn random_index(rng: &mut PolicyRng, len: usize) -> usize {
+    let bound = u64::try_from(len).expect("policy candidate count fits in u64");
+    debug_assert!(bound > 0);
+    let rejection_threshold = bound.wrapping_neg() % bound;
+    loop {
+        let sample = rng.next_u64();
+        if sample >= rejection_threshold {
+            return usize::try_from(sample % bound).expect("sampled index fits in usize");
+        }
+    }
+}
+
+fn uct_scores_nearly_equal(left: f64, right: f64) -> bool {
+    let scale = left.abs().max(right.abs()).max(1.0);
+    (left - right).abs() <= UCT_RELATIVE_TOLERANCE * scale
+}
 
 #[derive(Clone, Debug)]
 pub struct MctsPolicy {
@@ -40,7 +59,7 @@ impl MctsPolicy {
         &self,
         tree: &BranchTree,
         parent: BranchId,
-        rng: &mut StdRng,
+        rng: &mut PolicyRng,
     ) -> Option<BranchId> {
         let mut children: Vec<_> = tree
             .children(parent)
@@ -60,35 +79,40 @@ impl MctsPolicy {
             .filter(|child| tree.get(*child).expect("known child").visits() == 0)
             .collect();
         if !unvisited.is_empty() {
-            return Some(unvisited[rng.random_range(0..unvisited.len())]);
+            return Some(unvisited[random_index(rng, unvisited.len())]);
         }
 
         let parent_visits = tree.get(parent).expect("known parent").visits().max(1) as f64;
-        let mut best_score = f64::NEG_INFINITY;
-        let mut best = Vec::new();
+        let mut best = None;
         for child in children {
             let node = tree.get(child).expect("known child");
             let visits = node.visits() as f64;
             let exploitation = node.value_sum() / visits;
             let exploration = self.exploration_weight * (parent_visits.ln() / visits).sqrt();
             let score = exploitation + exploration;
-            match score.total_cmp(&best_score) {
-                std::cmp::Ordering::Greater => {
-                    best_score = score;
-                    best.clear();
-                    best.push(child);
+            match best {
+                None => best = Some((score, child)),
+                Some((best_score, best_child))
+                    if !uct_scores_nearly_equal(score, best_score)
+                        && score.total_cmp(&best_score).is_gt() =>
+                {
+                    best = Some((score, child));
                 }
-                std::cmp::Ordering::Equal => best.push(child),
-                std::cmp::Ordering::Less => {}
+                Some((best_score, best_child))
+                    if uct_scores_nearly_equal(score, best_score) && child < best_child =>
+                {
+                    best = Some((score, child));
+                }
+                Some(_) => {}
             }
         }
-        Some(best[rng.random_range(0..best.len())])
+        best.map(|(_, branch)| branch)
     }
 
     fn select(
         &self,
         tree: &mut BranchTree,
-        rng: &mut StdRng,
+        rng: &mut PolicyRng,
     ) -> Result<Vec<Command>, SchedulerError> {
         let mut current = tree.root();
         loop {
@@ -98,7 +122,7 @@ impl MctsPolicy {
             match node.state() {
                 BranchState::Active if node.depth() < self.max_depth => {
                     let children = tree.fork(current, self.expansion_width)?;
-                    let selected = children[rng.random_range(0..children.len())];
+                    let selected = children[random_index(rng, children.len())];
                     return Ok(vec![
                         Command::ForkAt {
                             branch: current,
@@ -127,7 +151,7 @@ impl Policy for MctsPolicy {
         &mut self,
         event: &EngineEvent,
         tree: &mut BranchTree,
-        rng: &mut StdRng,
+        rng: &mut PolicyRng,
     ) -> Result<Vec<Command>, SchedulerError> {
         if matches!(
             event,
@@ -144,5 +168,35 @@ impl Policy for MctsPolicy {
             tree.backpropagate(branch, value)?;
         }
         self.select(tree, rng)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rand::SeedableRng;
+
+    use super::*;
+
+    #[test]
+    fn near_equal_uct_scores_use_the_stable_branch_id_tie_break() {
+        let policy = MctsPolicy::new(MctsConfig {
+            expansion_width: 2,
+            max_depth: 2,
+            exploration_weight: 1.0,
+        })
+        .unwrap();
+        let mut tree = BranchTree::new();
+        let root = tree.root();
+        let children = tree.fork(root, 2).unwrap();
+        tree.backpropagate(children[0], 1.0).unwrap();
+        tree.backpropagate(children[1], 1.0 + 1.0e-15).unwrap();
+
+        for seed in 0..32 {
+            let mut rng = PolicyRng::seed_from_u64(seed);
+            assert_eq!(
+                policy.choose_child(&tree, root, &mut rng),
+                Some(children[0])
+            );
+        }
     }
 }

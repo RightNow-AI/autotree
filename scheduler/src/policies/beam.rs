@@ -1,10 +1,8 @@
 use std::collections::BTreeSet;
 
-use rand::rngs::StdRng;
-
 use crate::{
     BeamConfig, BranchId, BranchTree, Command, EngineEvent, KillReason, MAX_BRANCH_WIDTH, Policy,
-    SchedulerError,
+    PolicyRng, SchedulerError,
 };
 
 #[derive(Clone, Debug)]
@@ -53,7 +51,7 @@ impl Policy for BeamPolicy {
         &mut self,
         event: &EngineEvent,
         tree: &mut BranchTree,
-        _rng: &mut StdRng,
+        _rng: &mut PolicyRng,
     ) -> Result<Vec<Command>, SchedulerError> {
         let mut commands = Vec::new();
         let mut forked = false;
