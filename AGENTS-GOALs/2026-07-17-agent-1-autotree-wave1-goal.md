@@ -95,6 +95,39 @@ Remaining: serve-api lane building in `../AutoTree-serve-api` (first commit
 `9e77b2b` exists); on completion: orchestrator gate, merge on founder word,
 then wave 2 (correctness harness vs real 8B on GPU box, ThoughtBench).
 
+## WAVE 2 COMPLETE 2026-07-18 ~17:50 - awaiting founder merge word
+
+Five branches done + orchestrator-gated (fresh evidence, my own runs):
+- `feat/serve-api` `dd7703c`: 26/26; four review P2s fixed red-first and
+  re-verified line-by-line (modern OpenAI fields, include_usage, strict
+  token_index, branch-relationship validation). MERGEABLE.
+- `feat/model-executor` (5 commits to `d635e4e`): GPT-2 executes through
+  PagedKVPool/TreeState on CPU; parity harness (bit-parity tree-vs-seq,
+  greedy equality vs transformers, KV-reuse evidence, mutation pins);
+  17/17 modeling + full core 152 passed/45 skipped. GPU/8B honestly
+  unclaimed - harness parameterized for the GPU box.
+- `fix/scheduler-hardening` (6 commits to `7091488`): review's P1+3xP2+P3
+  fixed red-first (policy-command validation, pinned portable PRNG + golden
+  stream, transactional PyO3 polling, continuation reservation, signed
+  zero); 35/35, fmt/clippy/python-feature clean.
+- `feat/rollout-sdk` (3 commits to `b3a3ba2`): typed tree client + rollout()
+  + GRPO/RLHF exports; 18/18. Open item: `final_scores` wire association
+  underspecified - reconcile in spec at integration.
+- `chore/ci` (2 commits to `5a74346`): workflows (ci + gpu-parity dispatch
+  skeleton) + verify-local.ps1/.sh; my end-to-end run: all PASS, serve/
+  modeling honest SKIPs.
+
+Transport law (hard-won): WMI-detached codex exec via Foundry;
+<=4 concurrent sol streams MACHINE-WIDE (shared deployment rate limits -
+raise TPM in Foundry portal to lift); takeover-brief recovery on death;
+commit early.
+
+Next: founder merge word -> merge train (serve-api, model-executor,
+scheduler-hardening, rollout-sdk, ci) + post-merge full gates; core-review
+rerun; then engine-integration lane (scheduler PyO3 + ModelExecutor + serve
+EngineProtocol = real `--engine treekv`); then GPU box (AUTOTREE-002) for
+parity at 8B and Triton validation; remote (AUTOTREE-001) lights up CI.
+
 ## Next session
 
 Read this file, check the four job ids, gate each lane's diff (companion
