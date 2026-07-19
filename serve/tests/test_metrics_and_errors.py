@@ -42,6 +42,23 @@ async def test_metrics_scrape_parses_and_moves_after_generation(http_client):
     )
 
 
+async def test_unmatched_paths_share_one_metrics_label(http_client):
+    first = await http_client.get("/random-probe-one")
+    second = await http_client.get("/random-probe-two")
+
+    assert first.status_code == 404
+    assert second.status_code == 404
+
+    scrape = await http_client.get("/metrics")
+    families = {family.name: family for family in text_string_to_metric_families(scrape.text)}
+    unmatched_labels = {
+        sample.labels["endpoint"]
+        for sample in families["requests"].samples
+        if sample.name == "requests_total" and sample.labels["status"] == "404"
+    }
+    assert unmatched_labels == {"unmatched"}
+
+
 async def test_bad_tree_parameters_return_openai_error_body(http_client):
     response = await http_client.post(
         "/v1/tree/completions",

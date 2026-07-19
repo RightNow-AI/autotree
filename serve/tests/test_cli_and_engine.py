@@ -18,8 +18,10 @@ def test_cli_help_is_honest_about_deterministic_engine(capsys):
 
     assert exc.value.code == 0
     output = capsys.readouterr().out
+    normalized_output = " ".join(output.split())
     assert "seeded toy generator" in output
     assert "does not serve real model weights" in output
+    assert "The deterministic engine always exposes deterministic-demo." in normalized_output
     assert "--kv-pages" in output
     assert "--kv-branch-headroom" in output
 
@@ -99,7 +101,7 @@ def test_cli_starts_deterministic_server(monkeypatch):
 
     assert called["host"] == "0.0.0.0"
     assert called["port"] == 8123
-    assert called["app"].state.engine.model_metadata.id == "toy-model"
+    assert called["app"].state.engine.model_metadata.id == "deterministic-demo"
     assert called["app"].state.engine.model_metadata.real_model_weights is False
 
 

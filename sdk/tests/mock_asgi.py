@@ -174,6 +174,22 @@ class MockAutoTreeASGI:
                 b'"token_index":0,"token":"x"}\r\n\r\ndata: [DONE]\r\n\r\n',
             )
             return
+        if scenario == "capacity_error":
+            event = {
+                "type": "error",
+                "error": {
+                    "message": "Tree-KV capacity is exhausted.",
+                    "type": "rate_limit_error",
+                    "param": "kv_pages",
+                    "code": "kv_capacity_exhausted",
+                },
+                "retry_after_seconds": 2,
+            }
+            wire = (
+                f"data: {json.dumps(event)}\r\n\r\ndata: [DONE]\r\n\r\n".encode()
+            )
+            await self._sse(send, wire)
+            return
         events = [
             {"type": "branch_started", "branch_id": "root", "parent_id": None},
             {"type": "token", "branch_id": "root", "token_index": 0, "token": "an", "logprob": -0.1},

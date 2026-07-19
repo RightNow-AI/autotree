@@ -43,6 +43,8 @@ def assert_playground_event_schema() -> None:
 def parse_sse(body: str) -> list[tuple[str, dict[str, object]]]:
     events: list[tuple[str, dict[str, object]]] = []
     for frame in body.strip().split("\n\n"):
+        if frame == "data: [DONE]":
+            continue
         lines = frame.splitlines()
         event_type = next(line[7:] for line in lines if line.startswith("event: "))
         data = next(line[6:] for line in lines if line.startswith("data: "))
@@ -93,6 +95,7 @@ async def test_playground_sse_contract_matches_event_schema(http_client):
     )
 
     assert response.status_code == 200
+    assert response.text.endswith("data: [DONE]\n\n")
     events = parse_sse(response.text)
     by_type: dict[str, list[dict[str, object]]] = {}
     for event_type, payload in events:

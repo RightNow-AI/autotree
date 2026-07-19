@@ -148,11 +148,25 @@ class DoneEvent(TreeEventModel):
     tree: TreeSummary
 
 
+class StreamErrorDetails(TreeEventModel):
+    message: str = Field(min_length=1)
+    type: str = Field(min_length=1)
+    param: str | None = None
+    code: str = Field(min_length=1)
+
+
+class ErrorEvent(TreeEventModel):
+    type: Literal["error"] = "error"
+    error: StreamErrorDetails
+    retry_after_seconds: NonNegativeInt | None = None
+
+
 TreeEvent: TypeAlias = Annotated[
     BranchStartedEvent
     | TokenEvent
     | BranchPrunedEvent
     | BranchMergedEvent
+    | ErrorEvent
     | DoneEvent,
     Field(discriminator="type"),
 ]

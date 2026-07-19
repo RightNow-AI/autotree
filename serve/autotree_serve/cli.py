@@ -28,7 +28,10 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument(
         "--model",
         default="gpt2",
-        help="Model identifier exposed by the API (default: gpt2).",
+        help=(
+            "HuggingFace model identifier for --engine treekv (default: gpt2). "
+            "The deterministic engine always exposes deterministic-demo."
+        ),
     )
     serve.add_argument(
         "--engine",
@@ -77,7 +80,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             )
             raise SystemExit(2) from error
     elif args.engine == "deterministic":
-        engine = DeterministicEngine(model_id=args.model)
+        engine = DeterministicEngine()
     else:
         print(f"Unknown engine '{args.engine}'. No fallback was selected.", file=sys.stderr)
         raise SystemExit(2)

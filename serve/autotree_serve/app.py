@@ -7,6 +7,7 @@ import math
 import time
 import uuid
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -31,6 +32,7 @@ from .engine import (
     TreeExecution,
 )
 from .metrics import ServeMetrics
+from .runner import EngineRunner
 from .schema import ChatCompletionRequest, TreeCompletionRequest
 
 
@@ -61,6 +63,7 @@ _PLAYGROUND_CSP = (
     "script-src 'unsafe-inline'; connect-src 'self'; "
     "img-src 'self' data:; base-uri 'none'; form-action 'self'"
 )
+_CAPACITY_RETRY_AFTER_SECONDS = 1
 
 
 class EngineContractError(RuntimeError):
@@ -265,9 +268,18 @@ def create_app(
     registry: CollectorRegistry | None = None,
 ) -> FastAPI:
     selected_engine = engine or DeterministicEngine(model_id=model_id)
+    engine_runner = EngineRunner(selected_engine)
     metrics = ServeMetrics(registry)
-    app = FastAPI(title="autotree-serve", version="0.1.0")
+    started_at = time.monotonic()
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        yield
+        await engine_runner.shutdown()
+
+    app = FastAPI(title="autotree-serve", version="0.1.0", lifespan=lifespan)
     app.state.engine = selected_engine
+    app.state.engine_runner = engine_runner
     app.state.metrics = metrics
 
     @app.exception_handler(RequestValidationError)
@@ -308,12 +320,14 @@ def create_app(
             param="kv_pages",
             error_type="rate_limit_error",
             code="kv_capacity_exhausted",
+            headers={"Retry-After": str(_CAPACITY_RETRY_AFTER_SECONDS)},
         )
 
     @app.middleware("http")
     async def count_requests(request: Request, call_next: Any) -> Response:
         response = await call_next(request)
-        endpoint = request.url.path
+        route = request.scope.get("route")
+        endpoint = getattr(route, "path", None) or "unmatched"
         metrics.requests_total.labels(endpoint=endpoint, status=str(response.status_code)).inc()
         return response
 
@@ -338,6 +352,16 @@ def create_app(
             ],
         }
 
+    @app.get("/health")
+    async def health() -> dict[str, object]:
+        metadata = engine_runner.model_metadata
+        return {
+            "engine_kind": metadata.engine,
+            "model_id": metadata.id,
+            "uptime_seconds": max(0.0, time.monotonic() - started_at),
+            "ready": engine_runner.ready,
+        }
+
     @app.get("/playground", response_class=HTMLResponse)
     @app.get("/playground/", response_class=HTMLResponse)
     async def playground() -> HTMLResponse:
@@ -358,7 +382,7 @@ def create_app(
         if body.stream:
             return StreamingResponse(
                 _chat_stream(
-                    selected_engine,
+                    engine_runner,
                     request,
                     metrics,
                     include_usage=(
@@ -370,7 +394,7 @@ def create_app(
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
-        _events, done = await _collect_events(selected_engine, request, metrics)
+        _events, done = await _collect_events(engine_runner, request, metrics)
         return JSONResponse(_completion_response(done, body.model))
 
     @app.post("/v1/tree/completions")
@@ -384,11 +408,11 @@ def create_app(
         request = _to_engine_request(body)
         if body.stream:
             return StreamingResponse(
-                _tree_stream(selected_engine, request, metrics),
+                _tree_stream(engine_runner, request, metrics),
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
-        _events, done = await _collect_events(selected_engine, request, metrics)
+        _events, done = await _collect_events(engine_runner, request, metrics)
         return JSONResponse(_completion_response(done, body.model))
 
     @app.get("/metrics")
@@ -538,7 +562,9 @@ async def _chat_stream(
                     continue
                 done = event
         except KVCapacityExceededError as error:
-            yield _sse_data(_capacity_error_event(error))
+            yield _sse_data(
+                _chat_capacity_error_chunk(stream_id, created, request.model, error)
+            )
             yield "data: [DONE]\n\n"
             return
         if done is None:
@@ -601,7 +627,9 @@ async def _chat_stream(
                         )
                     )
         except KVCapacityExceededError as error:
-            yield _sse_data(_capacity_error_event(error))
+            yield _sse_data(
+                _chat_capacity_error_chunk(stream_id, created, request.model, error)
+            )
             yield "data: [DONE]\n\n"
             return
         if done is None:
@@ -643,9 +671,11 @@ async def _tree_stream(
             "event: error\n"
             f"data: {json.dumps(payload, separators=(',', ':'))}\n\n"
         )
+        yield "data: [DONE]\n\n"
         return
     if not saw_done:
         raise EngineContractError("engine stream ended without a done event")
+    yield "data: [DONE]\n\n"
 
 
 def _chat_chunk(
@@ -697,12 +727,40 @@ def _sse_data(payload: dict[str, object]) -> str:
 def _capacity_error_event(error: KVCapacityExceededError) -> dict[str, object]:
     return {
         "type": "error",
-        "error": {
-            "message": str(error),
-            "type": "rate_limit_error",
-            "param": "kv_pages",
-            "code": "kv_capacity_exhausted",
-        },
+        "error": _capacity_error_details(error),
+        "retry_after_seconds": _CAPACITY_RETRY_AFTER_SECONDS,
+    }
+
+
+def _chat_capacity_error_chunk(
+    stream_id: str,
+    created: int,
+    model: str,
+    error: KVCapacityExceededError,
+) -> dict[str, object]:
+    return _chat_chunk(
+        stream_id,
+        created,
+        model,
+        choices=[
+            {
+                "index": 0,
+                "delta": {
+                    "error": _capacity_error_details(error),
+                    "retry_after_seconds": _CAPACITY_RETRY_AFTER_SECONDS,
+                },
+                "finish_reason": "length",
+            }
+        ],
+    )
+
+
+def _capacity_error_details(error: KVCapacityExceededError) -> dict[str, object]:
+    return {
+        "message": str(error),
+        "type": "rate_limit_error",
+        "param": "kv_pages",
+        "code": "kv_capacity_exhausted",
     }
 
 
@@ -713,9 +771,11 @@ def _openai_error(
     param: str | None = None,
     error_type: str = "invalid_request_error",
     code: str | None = None,
+    headers: dict[str, str] | None = None,
 ) -> JSONResponse:
     return JSONResponse(
         status_code=status_code,
+        headers=headers,
         content={
             "error": {
                 "message": message,
