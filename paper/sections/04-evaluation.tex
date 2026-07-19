@@ -1,10 +1,26 @@
 \section{Evaluation Plan and Fixture Illustrations}
 
-\textbf{No model-performance result is reported in this draft.}  The bundled
-ThoughtBench tasks and every plotted value are synthetic contract fixtures.
-They validate the end-to-end reporting path, but they cannot support a claim
-about accuracy, cost, latency, KV reuse, or throughput.  GPU-scale measurements
-and real benchmark traces are pending.
+\textbf{No end-to-end model-performance result is reported in this draft.}
+The bundled ThoughtBench tasks and every plotted value are synthetic contract
+fixtures.  They validate the end-to-end reporting path, but they cannot
+support a claim about accuracy, cost, latency, KV reuse, or throughput.
+GPU-scale end-to-end measurements and real benchmark traces are pending.
+
+\subsection{Measured hardware validation}
+
+One class of real measurement does exist: a kernel-level validation pass on a
+single NVIDIA A100 SXM4 40GB (torch 2.11 cu128, Triton 3.6).  The fused
+Triton tree-attention decode kernel passes 106 parity tests against the CPU
+reference implementation, and token-level greedy parity against stock
+HuggingFace generation holds for Qwen3-8B in bfloat16 on CUDA.  A synthetic
+decode microbenchmark of the kernel alone (\texttt{bench\_decode}, 200
+iterations, bfloat16) scales near-linearly with branch count: at context
+length 128 it sustains 17.0k tokens/s with one branch and 539.3k tokens/s
+with 32 branches ($31.6\times$), and at context length 2048 it reaches
+$16.4\times$ at 32 branches.  This measurement supports the mechanism claim
+--- that tree-structured attention makes additional reasoning branches nearly
+free at the kernel level --- but it is not an end-to-end serving result and
+does not by itself establish the cost-per-correct-answer targets below.
 
 \subsection{Planned protocol}
 
