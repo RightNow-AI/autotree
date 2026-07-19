@@ -276,21 +276,23 @@ impl Scheduler {
         }
 
         emitted.extend(self.speculative_prune()?);
-        let tree_before_policy = self.tree.clone();
-        let policy_commands = self
-            .policy
-            .on_event(&event, &mut self.tree, &mut self.rng)?;
-        self.validate_policy_commands(&tree_before_policy, &policy_commands)?;
-        let terminal_branches: Vec<_> = policy_commands
-            .iter()
-            .filter_map(|command| match command {
-                Command::Kill { branch, .. } | Command::Finalize { branch } => Some(*branch),
-                Command::ForkAt { .. } | Command::Continue { .. } => None,
-            })
-            .collect();
-        emitted.extend(policy_commands);
-        for branch in terminal_branches {
-            emitted.extend(self.reclaim_completed_ancestors(branch)?);
+        if self.pending_budget_terminals.is_empty() {
+            let tree_before_policy = self.tree.clone();
+            let policy_commands = self
+                .policy
+                .on_event(&event, &mut self.tree, &mut self.rng)?;
+            self.validate_policy_commands(&tree_before_policy, &policy_commands)?;
+            let terminal_branches: Vec<_> = policy_commands
+                .iter()
+                .filter_map(|command| match command {
+                    Command::Kill { branch, .. } | Command::Finalize { branch } => Some(*branch),
+                    Command::ForkAt { .. } | Command::Continue { .. } => None,
+                })
+                .collect();
+            emitted.extend(policy_commands);
+            for branch in terminal_branches {
+                emitted.extend(self.reclaim_completed_ancestors(branch)?);
+            }
         }
         self.pending_external_values.retain(|branch, _| {
             self.tree

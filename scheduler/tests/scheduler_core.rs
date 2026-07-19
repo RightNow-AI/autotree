@@ -466,6 +466,106 @@ fn external_score_for_the_limit_token_arrives_before_terminalization() {
 }
 
 #[test]
+fn budget_terminal_branch_is_not_forked_by_beam_before_external_score_arrives() {
+    let mut scheduler = Scheduler::with_external_values(SchedulerConfig {
+        policy: PolicyConfig::Beam(BeamConfig {
+            width: 2,
+            fork_width: 2,
+            fork_at_tokens: vec![1],
+        }),
+        ..config(100, 1, None)
+    })
+    .unwrap();
+
+    scheduler
+        .feed_event(EngineEvent::TokenSampled {
+            branch: BranchId(0),
+            token: 0,
+            logprob: -0.1,
+        })
+        .unwrap();
+
+    assert!(scheduler.poll_commands().is_empty());
+    assert_eq!(scheduler.tree().len(), 1);
+    scheduler
+        .feed_event(EngineEvent::ValueScored {
+            branch: BranchId(0),
+            score: 0.9,
+        })
+        .expect("the pending terminal must remain a leaf until its score arrives");
+    assert_eq!(
+        scheduler.poll_commands(),
+        vec![Command::Finalize {
+            branch: BranchId(0),
+        }]
+    );
+}
+
+#[test]
+fn budget_terminal_branch_is_not_forked_by_mcts_from_a_sibling_score() {
+    let mut scheduler = Scheduler::with_external_values(SchedulerConfig {
+        policy: PolicyConfig::Mcts(MctsConfig {
+            expansion_width: 2,
+            max_depth: 2,
+            exploration_weight: 1.0,
+        }),
+        ..config(100, 2, None)
+    })
+    .unwrap();
+
+    scheduler
+        .feed_event(EngineEvent::TokenSampled {
+            branch: BranchId(0),
+            token: 0,
+            logprob: 0.0,
+        })
+        .unwrap();
+    scheduler
+        .feed_event(EngineEvent::ValueScored {
+            branch: BranchId(0),
+            score: 0.0,
+        })
+        .unwrap();
+    let _ = scheduler.poll_commands();
+
+    for branch in [BranchId(1), BranchId(2)] {
+        scheduler
+            .feed_event(EngineEvent::TokenSampled {
+                branch,
+                token: u32::try_from(branch.0).unwrap(),
+                logprob: -0.1,
+            })
+            .unwrap();
+    }
+
+    scheduler
+        .feed_event(EngineEvent::ValueScored {
+            branch: BranchId(2),
+            score: 0.5,
+        })
+        .unwrap();
+    assert_eq!(
+        scheduler.tree().get(BranchId(1)).unwrap().state(),
+        BranchState::Active
+    );
+    assert!(
+        scheduler
+            .tree()
+            .get(BranchId(1))
+            .unwrap()
+            .children()
+            .is_empty()
+    );
+
+    scheduler
+        .feed_event(EngineEvent::ValueScored {
+            branch: BranchId(1),
+            score: 0.75,
+        })
+        .expect("the pending terminal must remain a leaf until its score arrives");
+}
+
+#[test]
 fn tree_termination_prefers_scored_branches_over_unscored_logprob_proxies() {
     let mut scheduler = Scheduler::with_external_values(SchedulerConfig {
         policy: PolicyConfig::Beam(BeamConfig {
