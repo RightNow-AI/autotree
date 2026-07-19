@@ -91,3 +91,28 @@ tree_attention_decode(
 - Use `uv` for environments:
   `cd core && uv venv --python 3.12 && uv pip install -e ".[dev]"`,
   then `uv run pytest <tests> -q`. torch installs CPU wheels by default here.
+
+## Numerical parity contract
+
+Parity between tree execution and sequential execution is scoped by device
+and kernel path:
+
+- **CPU (reference kernel)**: bitwise. Fork/merge/dedup and forest-batched
+  decode produce bit-identical logits and KV to sequential per-branch
+  execution. CI enforces `torch.equal`.
+- **CUDA, same kernel path** (fork vs sequential, paged prefill vs stock
+  cache): elementwise closeness at dtype-scaled tolerances. GPU GEMM
+  reduction order is not batch-invariant, so bitwise equality across batch
+  shapes is not guaranteed by the hardware libraries.
+- **CUDA, cross-kernel path** (batched Triton tree-attention vs per-branch
+  decode): semantic equivalence - identical greedy argmax, near-identical
+  top-5, and bounded relative L2 (3% float32, 6% bf16/fp16). Elementwise
+  bounds are unsound here because independent kernel implementations
+  compound reduced-precision differences across layers.
+- **Token-level greedy parity vs stock HuggingFace `generate`** holds on
+  every device and dtype and is the user-facing guarantee.
+
+Measured reference points (A100 SXM4, torch 2.11 cu128): Qwen3-8B bf16
+forest-vs-sequential logits diverge by at most ~0.4 absolute on a ~44-wide
+logit range (rel-L2 ~2.6%) with argmax and top-5 identical; float32 paths
+stay within rel-L2 0.03.
