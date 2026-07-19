@@ -29,11 +29,25 @@ function expectKeys(value: Record<string, unknown>, keys: string[]) {
 }
 
 describe("ThoughtBench results contract", () => {
+  it("accepts thoughtbench.results.v2 with a 5x KV reuse ratio", () => {
+    const document = treeFixtureCopy();
+    document.schema_version = "thoughtbench.results.v2";
+    document.samples[0].kv_reuse_ratio = 5.0;
+
+    expect(validateResultsDocument(document)).toBeTruthy();
+  });
+
+  it("rejects the superseded thoughtbench.results.v1 contract", () => {
+    expect(() => validateResultsDocument(fixtureCopy())).toThrow(
+      /schema_version/,
+    );
+  });
+
   it("accepts the fixture emitted by ThoughtBench", () => {
     expect(validateResultsDocument(fixtureCopy())).toBeTruthy();
   });
 
-  it("pins every top-level field in thoughtbench.results.v1", () => {
+  it("pins every top-level field in thoughtbench.results.v2", () => {
     expectKeys(fixtureCopy(), [
       "aggregate_metrics",
       "artifact_notice",
