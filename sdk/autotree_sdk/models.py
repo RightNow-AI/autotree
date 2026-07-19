@@ -134,6 +134,8 @@ class EngineCounters(TreeEventModel):
     useful_tokens: int = Field(ge=0)
     elapsed_seconds: float = Field(gt=0)
     ttft_seconds: float = Field(ge=0)
+    unique_tokens_per_step: list[int] = Field(default_factory=list)
+    branch_tokens_per_step: list[int] = Field(default_factory=list)
 
 
 class DoneEvent(TreeEventModel):
