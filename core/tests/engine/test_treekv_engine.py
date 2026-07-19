@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from collections import deque
 from dataclasses import asdict, replace
 
 import pytest
+import torch
 
 from autotree_core.engine import (
     BranchMerged,
@@ -149,6 +151,36 @@ def request(*, budget_tokens: int = 3) -> GenerationRequest:
 
 async def collect(engine: TreeKVEngine, generation_request: GenerationRequest):
     return [event async for event in engine.generate(generation_request)]
+
+
+@pytest.mark.parametrize(
+    ("temperature", "top_p", "seed"),
+    [
+        pytest.param(0.5, 0.7, 11, id="nucleus-sampling"),
+        pytest.param(2.0, 1.0, 29, id="non-unit-temperature"),
+    ],
+)
+def test_sample_reports_unscaled_model_logprob(
+    temperature: float,
+    top_p: float,
+    seed: int,
+) -> None:
+    logits = torch.tensor([3.0, 2.0, 1.0, -1.0])
+    generation_request = replace(
+        request(),
+        temperature=temperature,
+        top_p=top_p,
+    )
+
+    token_id, logprob = TreeKVEngine._sample(
+        logits,
+        generation_request,
+        torch.Generator().manual_seed(seed),
+    )
+
+    expected = float(torch.log_softmax(logits.float(), dim=-1)[token_id].item())
+    assert math.isfinite(logprob)
+    assert logprob == pytest.approx(expected)
 
 
 def test_fork_ids_events_and_kill_reclaim_real_tree_kv_pages(tiny_engine_case) -> None:

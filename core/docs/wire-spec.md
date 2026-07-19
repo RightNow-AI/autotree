@@ -3,12 +3,14 @@
 Status: **NORMATIVE** for `autotree-serve`, `autotree-sdk`, and consumers of
 `POST /v1/tree/completions`.
 
-Contract version: **1.1.0**. The `/v1` path identifies this major wire version.
+Contract version: **1.2.0**. The `/v1` path identifies this major wire version.
 Breaking changes require a new major endpoint or an explicitly negotiated wire
 version. Additive response fields may be introduced within v1; clients must not
 infer semantics from fields that are not specified here.
 
 Version 1.1.0 adds the terminal `error` stream event and the `[DONE]` sentinel.
+Version 1.2.0 defines `token.logprob` as the unscaled model log probability,
+independent of the sampling temperature and nucleus truncation.
 
 The key words **MUST**, **MUST NOT**, **SHOULD**, and **MAY** are normative.
 
@@ -122,9 +124,11 @@ event is followed by `data: [DONE]` and a blank line. Successful streams end wit
 - `branch_id`: branch that owns this token span.
 - `token_index`: zero-based index within that branch's own emitted tokens.
 - `token`: exact text span contributed by this event.
-- `logprob`: finite natural-log probability assigned by the engine's sampler to
-  this sampled token. It MUST be the real sampled-token log probability, not a
-  branch score or placeholder.
+- `logprob`: finite natural-log probability of this sampled token under the
+  model's raw full-vocabulary logits: `log_softmax(raw_logits)[token_id]`. It is
+  independent of temperature and `top_p`, is not a branch score or placeholder,
+  and is not special-cased to `0.0` for greedy sampling. A behavior-policy
+  logprob, if added later, MUST use a separate explicitly named field.
 
 ### `branch_pruned`
 

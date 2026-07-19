@@ -548,12 +548,13 @@ class TreeKVEngine:
         request: GenerationRequest,
         generator: torch.Generator,
     ) -> tuple[int, float]:
-        scores = logits.float()
+        model_scores = logits.float()
+        sampling_scores = model_scores
         if request.temperature == 0:
-            token_id = int(torch.argmax(scores).item())
+            token_id = int(torch.argmax(sampling_scores).item())
         else:
-            scores = scores / request.temperature
-            probabilities = torch.softmax(scores, dim=-1)
+            sampling_scores = sampling_scores / request.temperature
+            probabilities = torch.softmax(sampling_scores, dim=-1)
             if request.top_p < 1.0:
                 sorted_probabilities, sorted_indices = torch.sort(
                     probabilities, descending=True
@@ -570,7 +571,7 @@ class TreeKVEngine:
             token_id = int(
                 torch.multinomial(probabilities, 1, generator=generator).item()
             )
-        logprob = float(torch.log_softmax(scores, dim=-1)[token_id].item())
+        logprob = float(torch.log_softmax(model_scores, dim=-1)[token_id].item())
         if not math.isfinite(logprob):
             raise RuntimeError("model produced a non-finite sampled-token logprob")
         return token_id, logprob
