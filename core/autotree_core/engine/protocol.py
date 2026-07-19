@@ -135,6 +135,26 @@ class EngineCounters:
     useful_tokens: int
     elapsed_seconds: float
     ttft_seconds: float
+    unique_tokens_per_step: tuple[int, ...] = ()
+    branch_tokens_per_step: tuple[int, ...] = ()
+
+    def __post_init__(self) -> None:
+        unique = tuple(self.unique_tokens_per_step)
+        branch = tuple(self.branch_tokens_per_step)
+        object.__setattr__(self, "unique_tokens_per_step", unique)
+        object.__setattr__(self, "branch_tokens_per_step", branch)
+        if len(unique) != len(branch):
+            raise ValueError("step token counters must have matching lengths")
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+            for value in (*unique, *branch)
+        ):
+            raise ValueError("step token counters must contain non-negative integers")
+        if any(
+            unique_count > branch_count
+            for unique_count, branch_count in zip(unique, branch, strict=True)
+        ):
+            raise ValueError("unique step tokens cannot exceed branch step tokens")
 
 
 @dataclass(frozen=True, slots=True)

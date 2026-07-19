@@ -17,6 +17,7 @@ from autotree_core.kv import KVCapacityError
 from autotree_core.modeling import ModelExecution, ModelExecutor, ModelExecutorConfig
 
 from .protocol import (
+    BranchMerged,
     BranchPruned,
     BranchStarted,
     EngineCounters,
@@ -61,6 +62,7 @@ class TreeKVEngine:
         scheduler_factory: SchedulerFactory | None = None,
         kv_pages: int | None = None,
         kv_branch_headroom: float = 1.5,
+        dedup_every_steps: int | None = 1,
     ) -> None:
         if kv_pages is not None and (
             isinstance(kv_pages, bool) or not isinstance(kv_pages, int) or kv_pages <= 0
@@ -68,15 +70,19 @@ class TreeKVEngine:
             raise ValueError("kv_pages must be a positive integer or None")
         if not math.isfinite(kv_branch_headroom) or kv_branch_headroom < 1.0:
             raise ValueError("kv_branch_headroom must be finite and at least 1.0")
+        if dedup_every_steps is not None and (
+            isinstance(dedup_every_steps, bool)
+            or not isinstance(dedup_every_steps, int)
+            or dedup_every_steps <= 0
+        ):
+            raise ValueError("dedup_every_steps must be a positive integer or None")
         if executor is None:
             executor_config = ModelExecutorConfig(model_id=model_id)
             if kv_pages is None:
                 model_config = AutoConfig.from_pretrained(model_id)
                 context_tokens = self._model_context_tokens(model_config)
                 kv_pages = math.ceil(
-                    context_tokens
-                    / executor_config.page_size
-                    * kv_branch_headroom
+                    context_tokens / executor_config.page_size * kv_branch_headroom
                 )
             executor_config = replace(executor_config, capacity_pages=kv_pages)
             executor = ModelExecutor(executor_config)
@@ -92,6 +98,7 @@ class TreeKVEngine:
                 ) from error
             scheduler_factory = Scheduler
         self._scheduler_factory = scheduler_factory
+        self._dedup_every_steps = dedup_every_steps
         self._metadata = ModelMetadata(
             id=model_id,
             engine="treekv",
@@ -141,88 +148,184 @@ class TreeKVEngine:
         scores: dict[int, float] = {execution.root_id: 0.0}
         active = {execution.root_id}
         finalized: set[int] = set()
+        merged: set[int] = set()
         exhaustion_pending: set[int] = set()
         stopped: set[int] = set()
         commands: deque[dict[str, object]] = deque()
         completion_tokens = 0
         pruned_count = 0
+        merged_count = 0
+        decode_steps = 0
+        unique_tokens_per_step: list[int] = []
+        branch_tokens_per_step: list[int] = []
         first_token_at: float | None = None
         best_snapshot = self._snapshot(execution)
 
         yield BranchStarted(branch_id="branch-0", parent_id=None)
 
-        async def advance(branch_id: int) -> TokenGenerated:
-            nonlocal completion_tokens, first_token_at, best_snapshot
-            if branch_id not in active:
-                raise RuntimeError(f"Continue targeted inactive branch {branch_id}")
-            budget = request.tree.budget_tokens if request.tree else request.max_tokens
-            if completion_tokens >= budget:
-                raise RuntimeError("scheduler Continue exceeded the request token budget")
+        def merge_converged_branches() -> tuple[BranchMerged, ...]:
+            nonlocal merged_count
+            groups: dict[tuple[tuple[int, ...], int], list[int]] = {}
+            for branch_id in sorted(active):
+                branch = execution.tree.get_branch(branch_id)
+                if (
+                    not branch.block_table
+                    or branch.num_tokens % execution.pool.config.page_size
+                ):
+                    continue
+                key = (execution.token_ids(branch_id), branch.block_table[-1])
+                groups.setdefault(key, []).append(branch_id)
 
-            logits = execution.next_logits(branch_id)
-            token_id, logprob = self._sample(logits, request, generator)
+            events: list[BranchMerged] = []
+            for branch_ids in groups.values():
+                if len(branch_ids) < 2:
+                    continue
+                target = min(branch_ids)
+                for branch_id in sorted(branch_ids):
+                    if branch_id == target:
+                        continue
+                    active.remove(branch_id)
+                    exhaustion_pending.discard(branch_id)
+                    self.executor.prune(execution, branch_id)
+                    merged.add(branch_id)
+                    merged_count += 1
+                    events.append(
+                        BranchMerged(
+                            branch_id=self._branch_name(branch_id),
+                            into_branch_id=self._branch_name(target),
+                        )
+                    )
+            return tuple(events)
+
+        async def advance_batch(
+            branch_ids: tuple[int, ...],
+        ) -> tuple[tuple[TokenGenerated, ...], tuple[BranchMerged, ...]]:
+            nonlocal completion_tokens, decode_steps, first_token_at, best_snapshot
+            if not branch_ids or len(set(branch_ids)) != len(branch_ids):
+                raise RuntimeError(
+                    "Continue commands must target distinct active branches"
+                )
+            inactive = [
+                branch_id for branch_id in branch_ids if branch_id not in active
+            ]
+            if inactive:
+                raise RuntimeError(f"Continue targeted inactive branch {inactive[0]}")
+            budget = request.tree.budget_tokens if request.tree else request.max_tokens
+            if completion_tokens + len(branch_ids) > budget:
+                raise RuntimeError(
+                    "scheduler Continue exceeded the request token budget"
+                )
+
+            sampled = tuple(
+                self._sample(execution.next_logits(branch_id), request, generator)
+                for branch_id in branch_ids
+            )
+            token_ids = tuple(token_id for token_id, _ in sampled)
             try:
-                self.executor.decode(execution, branch_id, token_id)
+                if len(branch_ids) == 1:
+                    self.executor.decode(execution, branch_ids[0], token_ids[0])
+                else:
+                    self.executor.decode_batch(execution, branch_ids, token_ids)
             except KVCapacityError as error:
                 raise self._capacity_error("decode", error) from error
-            token = self.tokenizer.decode(
-                [token_id],
-                skip_special_tokens=True,
-                clean_up_tokenization_spaces=False,
-            )
-            token_index = token_counts[branch_id]
-            token_counts[branch_id] += 1
-            own_text[branch_id].append(token)
-            path_text[branch_id] += token
-            scores[branch_id] += logprob
-            completion_tokens += 1
-            if self._token_exhausts_branch(token_id, path_text[branch_id], request):
-                exhaustion_pending.add(branch_id)
-                stopped.add(branch_id)
-            if first_token_at is None:
-                first_token_at = time.perf_counter()
-            best_snapshot = self._better_snapshot(best_snapshot, self._snapshot(execution))
 
-            scheduler.feed_event(
-                {
-                    "type": "token_sampled",
-                    "branch": branch_id,
-                    "token": token_id,
-                    "logprob": logprob,
-                }
-            )
-            if self._uses_external_scorer(request):
+            events: list[TokenGenerated] = []
+            for branch_id, (token_id, logprob) in zip(branch_ids, sampled, strict=True):
+                token = self.tokenizer.decode(
+                    [token_id],
+                    skip_special_tokens=True,
+                    clean_up_tokenization_spaces=False,
+                )
+                token_index = token_counts[branch_id]
+                token_counts[branch_id] += 1
+                own_text[branch_id].append(token)
+                path_text[branch_id] += token
+                scores[branch_id] += logprob
+                completion_tokens += 1
+                if self._token_exhausts_branch(token_id, path_text[branch_id], request):
+                    exhaustion_pending.add(branch_id)
+                    stopped.add(branch_id)
+                if first_token_at is None:
+                    first_token_at = time.perf_counter()
+
                 scheduler.feed_event(
                     {
-                        "type": "value_scored",
+                        "type": "token_sampled",
                         "branch": branch_id,
-                        "score": scores[branch_id] / max(token_counts[branch_id], 1),
+                        "token": token_id,
+                        "logprob": logprob,
                     }
                 )
-            commands.extend(scheduler.poll_commands())
-            await asyncio.sleep(0)
-            return TokenGenerated(
-                branch_id=self._branch_name(branch_id),
-                token=token,
-                token_index=token_index,
-                logprob=logprob,
-            )
+                if self._uses_external_scorer(request):
+                    scheduler.feed_event(
+                        {
+                            "type": "value_scored",
+                            "branch": branch_id,
+                            "score": scores[branch_id]
+                            / max(token_counts[branch_id], 1),
+                        }
+                    )
+                commands.extend(scheduler.poll_commands())
+                events.append(
+                    TokenGenerated(
+                        branch_id=self._branch_name(branch_id),
+                        token=token,
+                        token_index=token_index,
+                        logprob=logprob,
+                    )
+                )
 
-        yield await advance(execution.root_id)
+            decode_steps += 1
+            branch_tokens_per_step.append(len(branch_ids))
+            unique_tokens_per_step.append(
+                len({execution.token_ids(branch_id) for branch_id in branch_ids})
+            )
+            merge_events: tuple[BranchMerged, ...] = ()
+            if (
+                self._dedup_every_steps is not None
+                and decode_steps % self._dedup_every_steps == 0
+            ):
+                self.executor.deduplicate(execution)
+                best_snapshot = self._better_snapshot(
+                    best_snapshot, self._snapshot(execution)
+                )
+                merge_events = merge_converged_branches()
+            best_snapshot = self._better_snapshot(
+                best_snapshot, self._snapshot(execution)
+            )
+            await asyncio.sleep(0)
+            return tuple(events), merge_events
+
+        token_events, merge_events = await advance_batch((execution.root_id,))
+        for event in (*token_events, *merge_events):
+            yield event
 
         while commands:
             command = commands.popleft()
             command_type = str(command.get("type"))
             branch_id = int(command["branch"])
+            if branch_id in merged:
+                continue
             if command_type == "continue":
-                if branch_id in exhaustion_pending:
-                    exhaustion_pending.remove(branch_id)
-                    scheduler.feed_event(
-                        {"type": "branch_exhausted", "branch": branch_id}
-                    )
-                    commands.extend(scheduler.poll_commands())
-                    continue
-                yield await advance(branch_id)
+                continue_ids = [branch_id]
+                while commands and str(commands[0].get("type")) == "continue":
+                    continue_ids.append(int(commands.popleft()["branch"]))
+                ready: list[int] = []
+                for continued_id in continue_ids:
+                    if continued_id in merged:
+                        continue
+                    if continued_id in exhaustion_pending:
+                        exhaustion_pending.remove(continued_id)
+                        scheduler.feed_event(
+                            {"type": "branch_exhausted", "branch": continued_id}
+                        )
+                        commands.extend(scheduler.poll_commands())
+                    else:
+                        ready.append(continued_id)
+                if ready:
+                    token_events, merge_events = await advance_batch(tuple(ready))
+                    for event in (*token_events, *merge_events):
+                        yield event
                 continue
             if command_type == "fork_at":
                 if branch_id not in active:
@@ -304,7 +407,7 @@ class TreeKVEngine:
                 policy=request.tree.policy,
                 branch_count=len(parents),
                 pruned_count=pruned_count,
-                merged_count=0,
+                merged_count=merged_count,
                 winner_branch_id=self._branch_name(winner),
                 tokens_spent_per_branch={
                     self._branch_name(branch_id): token_counts[branch_id]
@@ -331,6 +434,8 @@ class TreeKVEngine:
                 useful_tokens=useful_tokens,
                 elapsed_seconds=max(ended_at - started_at, 1e-9),
                 ttft_seconds=max((first_token_at or ended_at) - started_at, 0.0),
+                unique_tokens_per_step=tuple(unique_tokens_per_step),
+                branch_tokens_per_step=tuple(branch_tokens_per_step),
             ),
             tree_summary=summary,
         )

@@ -32,6 +32,16 @@ class RecordingExecutor(ModelExecutor):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.prune_accounting: list[tuple[int, int, int]] = []
+        self.batch_decode_calls: list[tuple[int, ...]] = []
+        self.dedup_calls = 0
+
+    def decode_batch(self, execution, branch_ids, token_ids):
+        self.batch_decode_calls.append(tuple(branch_ids))
+        return super().decode_batch(execution, branch_ids, token_ids)
+
+    def deduplicate(self, execution) -> int:
+        self.dedup_calls += 1
+        return super().deduplicate(execution)
 
     def prune(self, execution, branch_id: int) -> None:
         before = execution.pool.used_pages
