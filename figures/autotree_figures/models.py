@@ -21,6 +21,8 @@ class Provenance(StrictModel):
 class ResultReference(StrictModel):
     path: str = Field(min_length=1)
     label: str = Field(min_length=1)
+    model: str | None = None
+    system: str | None = None
     panels: list[Literal["scaling", "pareto", "branching", "throughput"]]
 
 
@@ -37,8 +39,8 @@ class KVReuseHeatmap(StrictModel):
             raise ValueError("kv_reuse_heatmap values must have one row per depth")
         if any(len(row) != len(self.branching_factors) for row in self.values):
             raise ValueError("kv_reuse_heatmap rows must match branching_factors")
-        if any(value < 0 or value > 1 for row in self.values for value in row):
-            raise ValueError("kv_reuse_heatmap values must be ratios in [0, 1]")
+        if any(value < 1 for row in self.values for value in row):
+            raise ValueError("kv_reuse_heatmap values must be multipliers >= 1")
         return self
 
 
@@ -86,7 +88,7 @@ class TreeTopology(StrictModel):
 
 class EffortPoint(StrictModel):
     effort: float = Field(ge=0, le=1)
-    seed_values: list[float] = Field(min_length=1)
+    seed_values: list[float] = Field(min_length=3, max_length=3)
 
     @model_validator(mode="after")
     def validate_accuracy(self) -> "EffortPoint":

@@ -16,6 +16,7 @@ class MetricPoint:
     accuracy_error: float
     total_tokens: float
     total_cost_usd: float
+    cost_per_correct_usd: float | None
     throughput: float | None
     throughput_error: float | None
 
@@ -47,6 +48,10 @@ def metric_points(run: LoadedRun) -> list[MetricPoint]:
         rows = rows_by_budget.get(budget_name, [])
         if not rows:
             continue
+        if len(rows) != 3:
+            raise ValueError(
+                f"{run.path} budget {budget_name!r} must contain exactly three protocol seeds"
+            )
         accuracies = [_accuracy(row) for row in rows]
         tokens = [float(row["input_tokens"] + row["output_tokens"]) for row in rows]
         costs = [float(row["total_cost_usd"]) for row in rows]
@@ -62,6 +67,15 @@ def metric_points(run: LoadedRun) -> list[MetricPoint]:
                 accuracy_error=_spread(accuracies),
                 total_tokens=mean(tokens),
                 total_cost_usd=mean(costs),
+                cost_per_correct_usd=(
+                    mean(
+                        float(row["cost_per_correct_usd"])
+                        for row in rows
+                        if row.get("cost_per_correct_usd") is not None
+                    )
+                    if any(row.get("cost_per_correct_usd") is not None for row in rows)
+                    else None
+                ),
                 throughput=mean(throughputs) if throughputs else None,
                 throughput_error=_spread(throughputs) if throughputs else None,
             )
