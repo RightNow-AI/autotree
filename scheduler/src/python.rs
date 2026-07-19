@@ -277,6 +277,75 @@ mod tests {
     }
 
     #[test]
+    fn python_entropy_and_adaptive_config_are_additive() {
+        Python::initialize();
+        Python::attach(|py| {
+            let config = PyDict::new(py);
+            config.set_item("policy", "beam").unwrap();
+            config.set_item("branches", 4).unwrap();
+            config.set_item("fork_at_tokens", vec![99_u64]).unwrap();
+            config
+                .set_item("adaptive_entropy_threshold", 1.5)
+                .unwrap();
+            config.set_item("adaptive_min_width", 2).unwrap();
+            config.set_item("adaptive_max_width", 4).unwrap();
+            config.set_item("adaptive_entropy_step", 0.5).unwrap();
+            config.set_item("budget_tokens", 100).unwrap();
+            let mut scheduler = PyScheduler::new(&config).unwrap();
+
+            let event = PyDict::new(py);
+            event.set_item("type", "token_sampled").unwrap();
+            event.set_item("branch", 0).unwrap();
+            event.set_item("token", 7).unwrap();
+            event.set_item("logprob", -0.1).unwrap();
+            event.set_item("entropy", 2.1).unwrap();
+            scheduler.feed_event(&event).unwrap();
+
+            let commands = scheduler.poll_commands(py).unwrap();
+            let commands = commands.bind(py);
+            let first = commands.get_item(0).unwrap().cast_into::<PyDict>().unwrap();
+            assert_eq!(
+                first
+                    .get_item("type")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "fork_at"
+            );
+            assert_eq!(
+                first
+                    .get_item("width")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<u32>()
+                    .unwrap(),
+                3
+            );
+        });
+    }
+
+    #[test]
+    fn python_legacy_config_and_event_need_no_new_fields() {
+        Python::initialize();
+        Python::attach(|py| {
+            let config = PyDict::new(py);
+            config.set_item("policy", "beam").unwrap();
+            config.set_item("fork_at_tokens", Vec::<u64>::new()).unwrap();
+            let mut scheduler = PyScheduler::new(&config).unwrap();
+
+            let event = PyDict::new(py);
+            event.set_item("type", "token_sampled").unwrap();
+            event.set_item("branch", 0).unwrap();
+            event.set_item("token", 7).unwrap();
+            event.set_item("logprob", -0.1).unwrap();
+            scheduler.feed_event(&event).unwrap();
+
+            assert_eq!(scheduler.poll_commands(py).unwrap().bind(py).len(), 1);
+        });
+    }
+
+    #[test]
     fn conversion_failure_leaves_the_rust_command_queue_untouched() {
         Python::initialize();
         Python::attach(|py| {
