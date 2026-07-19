@@ -269,6 +269,7 @@ def create_app(
     selected_engine = engine or DeterministicEngine(model_id=model_id)
     engine_runner = EngineRunner(selected_engine)
     metrics = ServeMetrics(registry)
+    started_at = time.monotonic()
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -347,6 +348,16 @@ def create_app(
                     },
                 }
             ],
+        }
+
+    @app.get("/health")
+    async def health() -> dict[str, object]:
+        metadata = engine_runner.model_metadata
+        return {
+            "engine_kind": metadata.engine,
+            "model_id": metadata.id,
+            "uptime_seconds": max(0.0, time.monotonic() - started_at),
+            "ready": engine_runner.ready,
         }
 
     @app.get("/playground", response_class=HTMLResponse)
