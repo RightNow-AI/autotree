@@ -55,9 +55,9 @@ try {
         try { Invoke-Native uv venv --python 3.12 --clear }
         finally { Pop-Location }
     }
-    Invoke-Gate "core: install dev dependencies" {
+    Invoke-Gate "core: install engine dependencies" {
         Push-Location core
-        try { Invoke-Native uv pip install -e ".[dev]" }
+        try { Invoke-Native uv pip install -e ".[dev,engine]" }
         finally { Pop-Location }
     }
     Invoke-Gate "core: KV + kernel tests" {
@@ -85,6 +85,41 @@ try {
         try { Invoke-Native cargo check --features python }
         finally { Pop-Location }
     }
+    Invoke-Gate "real engine: build + install scheduler wheel" {
+        $wheelDirectory = Join-Path ([System.IO.Path]::GetTempPath()) ("autotree-wheel-" + [System.Guid]::NewGuid().ToString("N"))
+        New-Item -ItemType Directory -Path $wheelDirectory | Out-Null
+        $previousVirtualEnv = $env:VIRTUAL_ENV
+        try {
+            $env:VIRTUAL_ENV = Join-Path $repoRoot "core/.venv"
+            Invoke-Native uv pip install -e "core[dev,engine]" -e "serve[dev]"
+            Invoke-Native uv pip install maturin
+            Invoke-Native uv run --active maturin build -m scheduler/Cargo.toml --features python --release --out $wheelDirectory
+            $wheels = @(Get-ChildItem -LiteralPath $wheelDirectory -Filter "*.whl" -File)
+            if ($wheels.Count -ne 1) {
+                throw "Expected exactly one scheduler wheel in $wheelDirectory; found $($wheels.Count)."
+            }
+            Invoke-Native uv pip install $wheels[0].FullName
+        }
+        finally {
+            $env:VIRTUAL_ENV = $previousVirtualEnv
+            Remove-Item -LiteralPath $wheelDirectory -Recurse -Force
+        }
+    }
+    Invoke-Gate "real engine: core engine tests" {
+        Push-Location core
+        try { Invoke-Native uv run --no-sync pytest -q tests/engine }
+        finally { Pop-Location }
+    }
+    Invoke-Gate "real engine: serve TreeKV E2E" {
+        $previousVirtualEnv = $env:VIRTUAL_ENV
+        try {
+            $env:VIRTUAL_ENV = Join-Path $repoRoot "core/.venv"
+            Push-Location serve
+            try { Invoke-Native uv run --active --no-sync pytest -q tests/test_treekv_e2e.py }
+            finally { Pop-Location }
+        }
+        finally { $env:VIRTUAL_ENV = $previousVirtualEnv }
+    }
 
     if (Test-Path -LiteralPath (Join-Path $repoRoot "serve")) {
         Invoke-Gate "serve: create Python 3.12 env" {
@@ -97,9 +132,9 @@ try {
             try { Invoke-Native uv pip install -e ".[dev]" }
             finally { Pop-Location }
         }
-        Invoke-Gate "serve: tests" {
+        Invoke-Gate "serve: tests outside real-engine gate" {
             Push-Location serve
-            try { Invoke-Native uv run --no-sync pytest -q }
+            try { Invoke-Native uv run --no-sync pytest -q --ignore=tests/test_treekv_e2e.py }
             finally { Pop-Location }
         }
     }
@@ -159,7 +194,7 @@ try {
     if ($Modeling) {
         Invoke-Gate "modeling: install dependencies" {
             Push-Location core
-            try { Invoke-Native uv pip install -e ".[dev,modeling]" }
+            try { Invoke-Native uv pip install -e ".[dev,engine,modeling]" }
             finally { Pop-Location }
         }
         Invoke-Gate "modeling: core tests" {
