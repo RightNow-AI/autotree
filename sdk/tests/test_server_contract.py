@@ -15,7 +15,7 @@ from autotree_serve import create_app
 
 @pytest.fixture(scope="module")
 def deterministic_server() -> str:
-    app = create_app(model_id="autotree-deterministic")
+    app = create_app(model_id="deterministic-demo")
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
@@ -64,7 +64,7 @@ def test_real_serve_stream_is_consumable_by_real_sdk(
             3,
             budget_tokens=6,
             seed=17,
-            model="autotree-deterministic",
+            model="deterministic-demo",
             client=client,
             max_tokens=2,
         )
