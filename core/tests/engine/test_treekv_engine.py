@@ -130,6 +130,54 @@ class ConvergingScheduler:
         return commands
 
 
+class MeanRankingScheduler:
+    """Finalize branches after ranking their externally supplied mean scores."""
+
+    def __init__(
+        self,
+        config: dict[str, object],
+        observed_scores: dict[int, list[float]],
+    ) -> None:
+        self.config = config
+        self.observed_scores = observed_scores
+        self._commands: deque[dict[str, object]] = deque()
+
+    def feed_event(self, event: dict[str, object]) -> None:
+        if event["type"] != "value_scored":
+            return
+        branch_id = int(event["branch"])
+        self.observed_scores[branch_id].append(float(event["score"]))
+        if branch_id == 0:
+            self._commands.extend(
+                [
+                    {"type": "fork_at", "branch": 0, "width": 2},
+                    {"type": "continue", "branch": 1},
+                    {"type": "continue", "branch": 2},
+                ]
+            )
+        elif branch_id == 2 and len(self.observed_scores[2]) == 1:
+            self._commands.extend(
+                [
+                    {"type": "finalize", "branch": 1},
+                    {"type": "continue", "branch": 2},
+                ]
+            )
+        elif branch_id == 2 and len(self.observed_scores[2]) == 2:
+            self._commands.append({"type": "continue", "branch": 2})
+        elif branch_id == 2 and len(self.observed_scores[2]) == 3:
+            self._commands.extend(
+                [
+                    {"type": "finalize", "branch": 2},
+                    {"type": "kill", "branch": 0, "reason": "fork_replaced"},
+                ]
+            )
+
+    def poll_commands(self) -> list[dict[str, object]]:
+        commands = list(self._commands)
+        self._commands.clear()
+        return commands
+
+
 def request(*, budget_tokens: int = 3) -> GenerationRequest:
     return GenerationRequest(
         model="tiny-engine-model",
@@ -273,6 +321,55 @@ def test_same_seed_produces_identical_winning_completion(tiny_engine_case) -> No
     second_done = next(event for event in second if isinstance(event, GenerationDone))
     assert first_done.text == second_done.text
     assert first_done.tree_summary == second_done.tree_summary
+
+
+def test_winner_uses_scheduler_mean_score_across_fork(
+    tiny_engine_case,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed_scores: dict[int, list[float]] = {0: [], 1: [], 2: []}
+    engine = TreeKVEngine(
+        model_id="tiny-engine-model",
+        executor=tiny_engine_case.executor,
+        tokenizer=tiny_engine_case.tokenizer,
+        scheduler_factory=lambda config: MeanRankingScheduler(config, observed_scores),
+    )
+    samples = iter(
+        [
+            (10, -10.0),
+            (11, -0.1),
+            (12, -1.0),
+            (13, -1.0),
+            (14, -1.0),
+        ]
+    )
+    monkeypatch.setattr(
+        engine,
+        "_sample",
+        lambda _logits, _request, _generator: next(samples),
+    )
+    generation_request = replace(
+        request(budget_tokens=5),
+        tree=TreeExecution(
+            policy="beam",
+            branches=2,
+            budget_tokens=5,
+            scorer="external",
+        ),
+    )
+
+    events = asyncio.run(collect(engine, generation_request))
+
+    assert observed_scores[1][0] == pytest.approx((-10.0 - 0.1) / 2)
+    assert observed_scores[2] == pytest.approx(
+        [(-10.0 - 1.0) / 2, (-10.0 - 2.0) / 3, (-10.0 - 3.0) / 4]
+    )
+    done = next(event for event in events if isinstance(event, GenerationDone))
+    assert done.branch_id == "branch-2"
+    assert done.tree_summary is not None
+    assert done.tree_summary.winner_branch_id == "branch-2"
+    assert done.tree_summary.final_scores["branch-2"] == pytest.approx(-3.25)
+    assert done.tree_summary.final_scores["branch-1"] == pytest.approx(-5.05)
 
 
 def test_real_scheduler_never_exceeds_requested_tree_budget(tiny_engine_case) -> None:

@@ -145,6 +145,7 @@ class TreeKVEngine:
         own_text: dict[int, list[str]] = {execution.root_id: []}
         path_text: dict[int, str] = {execution.root_id: ""}
         token_counts: dict[int, int] = {execution.root_id: 0}
+        ranking_token_counts: dict[int, int] = {execution.root_id: 0}
         scores: dict[int, float] = {execution.root_id: 0.0}
         active = {execution.root_id}
         finalized: set[int] = set()
@@ -238,6 +239,7 @@ class TreeKVEngine:
                 )
                 token_index = token_counts[branch_id]
                 token_counts[branch_id] += 1
+                ranking_token_counts[branch_id] += 1
                 own_text[branch_id].append(token)
                 path_text[branch_id] += token
                 scores[branch_id] += logprob
@@ -262,7 +264,7 @@ class TreeKVEngine:
                             "type": "value_scored",
                             "branch": branch_id,
                             "score": scores[branch_id]
-                            / max(token_counts[branch_id], 1),
+                            / max(ranking_token_counts[branch_id], 1),
                         }
                     )
                 commands.extend(scheduler.poll_commands())
@@ -346,6 +348,7 @@ class TreeKVEngine:
                     own_text[child_id] = []
                     path_text[child_id] = path_text[branch_id]
                     token_counts[child_id] = 0
+                    ranking_token_counts[child_id] = ranking_token_counts[branch_id]
                     scores[child_id] = scores[branch_id]
                     active.add(child_id)
                     if children_are_exhausted:
@@ -387,7 +390,12 @@ class TreeKVEngine:
         if not finalized:
             raise RuntimeError("scheduler terminated without a finalized branch")
 
-        winner = max(finalized, key=lambda branch: (scores[branch], -branch))
+        ranking_scores = {
+            branch_id: scores[branch_id]
+            / max(ranking_token_counts[branch_id], 1)
+            for branch_id in parents
+        }
+        winner = max(finalized, key=lambda branch: (ranking_scores[branch], -branch))
         for branch_id in sorted(finalized - {winner}):
             pruned_count += 1
             yield BranchPruned(
@@ -414,7 +422,7 @@ class TreeKVEngine:
                     for branch_id in sorted(parents)
                 },
                 final_scores={
-                    self._branch_name(branch_id): scores[branch_id]
+                    self._branch_name(branch_id): ranking_scores[branch_id]
                     for branch_id in sorted(parents)
                 },
                 scorer=request.tree.scorer,
