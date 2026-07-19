@@ -7,6 +7,7 @@ from dataclasses import replace
 import pytest
 
 from autotree_core.engine import (
+    BranchMerged,
     BranchPruned,
     BranchStarted,
     GenerationDone,
@@ -92,6 +93,41 @@ class ContinueUntilCapacityScheduler:
         return commands
 
 
+class ConvergingScheduler:
+    """Fork two greedy-identical children, then finalize the surviving branch."""
+
+    def __init__(self, config: dict[str, object]) -> None:
+        self.config = config
+        self._commands: deque[dict[str, object]] = deque()
+        self._token_events = 0
+
+    def feed_event(self, event: dict[str, object]) -> None:
+        if event["type"] != "token_sampled":
+            return
+        self._token_events += 1
+        if self._token_events == 1:
+            self._commands.extend(
+                [
+                    {"type": "fork_at", "branch": 0, "width": 2},
+                    {"type": "continue", "branch": 1},
+                    {"type": "continue", "branch": 2},
+                ]
+            )
+        elif self._token_events == 3:
+            self._commands.extend(
+                [
+                    {"type": "finalize", "branch": 1},
+                    {"type": "finalize", "branch": 2},
+                    {"type": "kill", "branch": 0, "reason": "fork_replaced"},
+                ]
+            )
+
+    def poll_commands(self) -> list[dict[str, object]]:
+        commands = list(self._commands)
+        self._commands.clear()
+        return commands
+
+
 def request(*, budget_tokens: int = 3) -> GenerationRequest:
     return GenerationRequest(
         model="tiny-engine-model",
@@ -139,6 +175,7 @@ def test_fork_ids_events_and_kill_reclaim_real_tree_kv_pages(tiny_engine_case) -
         branch_id == 2 and after < before
         for branch_id, before, after in tiny_engine_case.executor.prune_accounting
     ), "a scheduler Kill must immediately release the killed leaf's KV reference"
+    assert tiny_engine_case.executor.batch_decode_calls == [(1, 2)]
     done = next(event for event in events if isinstance(event, GenerationDone))
     token_events = [event for event in events if isinstance(event, TokenGenerated)]
     assert done.usage.completion_tokens == len(token_events) == 3
@@ -149,6 +186,41 @@ def test_fork_ids_events_and_kill_reclaim_real_tree_kv_pages(tiny_engine_case) -
         "branch-1",
         "branch-2",
     }
+
+
+def test_convergent_children_batch_dedup_merge_and_measure_step_costs(
+    tiny_engine_case,
+) -> None:
+    executor = type(tiny_engine_case.executor)(
+        replace(tiny_engine_case.executor.config, page_size=2),
+        model=tiny_engine_case.executor.model,
+    )
+    engine = TreeKVEngine(
+        model_id="tiny-engine-model",
+        executor=executor,
+        tokenizer=tiny_engine_case.tokenizer,
+        scheduler_factory=ConvergingScheduler,
+        dedup_every_steps=2,
+    )
+
+    events = asyncio.run(collect(engine, request()))
+
+    merges = [event for event in events if isinstance(event, BranchMerged)]
+    assert [(event.branch_id, event.into_branch_id) for event in merges] == [
+        ("branch-2", "branch-1")
+    ]
+    assert executor.batch_decode_calls == [(1, 2)]
+    assert executor.dedup_calls == 1
+
+    done = next(event for event in events if isinstance(event, GenerationDone))
+    assert done.tree_summary is not None
+    assert done.tree_summary.merged_count == 1
+    assert done.tree_summary.pruned_count == 1
+    assert done.tree_summary.kv_reuse_ratio == (
+        done.counters.logical_tokens / done.counters.physical_tokens
+    )
+    assert done.counters.unique_tokens_per_step == (1, 1)
+    assert done.counters.branch_tokens_per_step == (1, 2)
 
 
 def test_same_seed_produces_identical_winning_completion(tiny_engine_case) -> None:
@@ -189,10 +261,7 @@ def test_eos_feeds_branch_exhausted_and_finishes_with_stop(
 ) -> None:
     observed_events: list[dict[str, object]] = []
     expected_id = int(
-        tiny_engine_case.executor.prefill([5, 6, 7, 8])
-        .next_logits(0)
-        .argmax()
-        .item()
+        tiny_engine_case.executor.prefill([5, 6, 7, 8]).next_logits(0).argmax().item()
     )
     tiny_engine_case.tokenizer.eos_token_id = expected_id
     engine = TreeKVEngine(
