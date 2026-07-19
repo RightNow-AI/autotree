@@ -36,6 +36,8 @@ class SchedulerBinding(Protocol):
 
     def poll_commands(self) -> list[dict[str, object]]: ...
 
+    def branch_state(self, branch: int) -> str | None: ...
+
 
 SchedulerFactory = Callable[[dict[str, object]], SchedulerBinding]
 
@@ -164,10 +166,42 @@ class TreeKVEngine:
 
         yield BranchStarted(branch_id="branch-0", parent_id=None)
 
-        def merge_converged_branches() -> tuple[BranchMerged, ...]:
+        def scheduler_branch_state(branch_id: int) -> str | None:
+            checker = getattr(scheduler, "branch_state", None)
+            return None if checker is None else checker(branch_id)
+
+        def scheduler_branch_is_active(branch_id: int) -> bool:
+            state = scheduler_branch_state(branch_id)
+            return state is None or state == "active"
+
+        def merge_converged_branches(
+            pending_commands: tuple[dict[str, object], ...],
+        ) -> tuple[BranchMerged, ...]:
             nonlocal merged_count
+            scheduler_terminal = {
+                int(command["branch"])
+                for command in pending_commands
+                if str(command.get("type")) in {"kill", "finalize"}
+            }
+            scheduler_terminal.update(
+                branch_id
+                for branch_id in active
+                if scheduler_branch_state(branch_id) in {"killed", "finalized"}
+            )
+            scheduler_expanding = {
+                int(command["branch"])
+                for command in pending_commands
+                if str(command.get("type")) == "fork_at"
+            }
+            scheduler_expanding.update(
+                branch_id
+                for branch_id in active
+                if scheduler_branch_state(branch_id) == "expanded"
+            )
             groups: dict[tuple[tuple[int, ...], int], list[int]] = {}
             for branch_id in sorted(active):
+                if branch_id in exhaustion_pending or branch_id in scheduler_expanding:
+                    continue
                 branch = execution.tree.get_branch(branch_id)
                 if (
                     not branch.block_table
@@ -181,10 +215,20 @@ class TreeKVEngine:
             for branch_ids in groups.values():
                 if len(branch_ids) < 2:
                     continue
-                target = min(branch_ids)
+                target = min(
+                    branch_ids,
+                    key=lambda branch_id: (
+                        branch_id in scheduler_terminal,
+                        branch_id,
+                    ),
+                )
                 for branch_id in sorted(branch_ids):
                     if branch_id == target:
                         continue
+                    if branch_id not in scheduler_terminal:
+                        scheduler.feed_event(
+                            {"type": "branch_exhausted", "branch": branch_id}
+                        )
                     active.remove(branch_id)
                     exhaustion_pending.discard(branch_id)
                     self.executor.prune(execution, branch_id)
@@ -271,7 +315,6 @@ class TreeKVEngine:
                             / max(ranking_token_counts[branch_id], 1),
                         }
                     )
-                commands.extend(scheduler.poll_commands())
                 events.append(
                     TokenGenerated(
                         branch_id=self._branch_name(branch_id),
@@ -287,6 +330,7 @@ class TreeKVEngine:
             unique_tokens_per_step.append(
                 len({execution.token_ids(branch_id) for branch_id in branch_ids})
             )
+            scheduler_commands = tuple(scheduler.poll_commands())
             merge_events: tuple[BranchMerged, ...] = ()
             if (
                 self._dedup_every_steps is not None
@@ -296,7 +340,9 @@ class TreeKVEngine:
                 best_snapshot = self._better_snapshot(
                     best_snapshot, self._snapshot(execution)
                 )
-                merge_events = merge_converged_branches()
+                merge_events = merge_converged_branches(scheduler_commands)
+            commands.extend(scheduler_commands)
+            commands.extend(scheduler.poll_commands())
             best_snapshot = self._better_snapshot(
                 best_snapshot, self._snapshot(execution)
             )
@@ -319,7 +365,9 @@ class TreeKVEngine:
                     continue_ids.append(int(commands.popleft()["branch"]))
                 ready: list[int] = []
                 for continued_id in continue_ids:
-                    if continued_id in merged:
+                    if continued_id in merged or continued_id not in active:
+                        continue
+                    if not scheduler_branch_is_active(continued_id):
                         continue
                     if continued_id in exhaustion_pending:
                         exhaustion_pending.remove(continued_id)

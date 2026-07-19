@@ -427,6 +427,42 @@ def test_real_scheduler_never_exceeds_requested_tree_budget(tiny_engine_case) ->
     assert sum(done.tree_summary.tokens_spent_per_branch.values()) == 3
 
 
+@pytest.mark.parametrize("policy", ["beam", "best_first", "mcts"])
+def test_real_scheduler_keeps_engine_lifecycle_aligned_during_dedup(
+    tiny_engine_case,
+    policy: str,
+) -> None:
+    pytest.importorskip("autotree_scheduler")
+    executor = type(tiny_engine_case.executor)(
+        replace(tiny_engine_case.executor.config, page_size=2),
+        model=tiny_engine_case.executor.model,
+    )
+    engine = TreeKVEngine(
+        model_id="tiny-engine-model",
+        executor=executor,
+        tokenizer=tiny_engine_case.tokenizer,
+    )
+
+    generation_request = replace(
+        request(budget_tokens=6),
+        tree=TreeExecution(
+            policy=policy,
+            branches=2,
+            budget_tokens=6,
+            scorer=None,
+        ),
+    )
+    events = asyncio.run(collect(engine, generation_request))
+
+    done = next(event for event in events if isinstance(event, GenerationDone))
+    assert done.usage.completion_tokens <= 6
+    assert done.tree_summary is not None
+    assert done.tree_summary.branch_count > 1
+    assert done.tree_summary.kv_reuse_ratio > 1.0
+    if policy == "beam":
+        assert done.tree_summary.merged_count >= 1
+
+
 def test_eos_feeds_branch_exhausted_and_finishes_with_stop(
     tiny_engine_case,
 ) -> None:
