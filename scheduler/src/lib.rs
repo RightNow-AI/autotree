@@ -20,4 +20,7 @@ pub use policy::{BeamConfig, BestFirstConfig, MctsConfig, Policy, PolicyConfig, 
 pub use python::PyScheduler;
 pub use scheduler::{DEFAULT_MAX_PENDING_EVENTS, Scheduler, SchedulerConfig};
 pub use scorer::{BiasedOracleScorer, LogprobScorer, ValueScorer};
-pub use types::{BranchId, BranchNode, BranchState, BranchTree, KillReason, MAX_BRANCH_WIDTH};
+pub use types::{
+    BranchId, BranchNode, BranchState, BranchTree, DEFAULT_MAX_TOTAL_BRANCHES, KillReason,
+    MAX_BRANCH_WIDTH,
+};

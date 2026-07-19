@@ -3,6 +3,12 @@ use crate::SchedulerError;
 /// Defensive ceiling for one expansion. Public serving inputs must stay below this bound.
 pub const MAX_BRANCH_WIDTH: u32 = 1_024;
 
+/// Default cap for the monotonic branch arena (root included).
+///
+/// This permits broad search while bounding scheduler metadata to tens of thousands of nodes
+/// instead of allowing one policy event to allocate millions.
+pub const DEFAULT_MAX_TOTAL_BRANCHES: u64 = 65_536;
+
 /// Stable arena handle for a branch. The root is always `BranchId(0)`.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct BranchId(pub u64);
@@ -133,6 +139,7 @@ impl BranchNode {
 #[derive(Clone, Debug)]
 pub struct BranchTree {
     nodes: Vec<BranchNode>,
+    max_total_branches: u64,
 }
 
 impl Default for BranchTree {
@@ -144,7 +151,17 @@ impl Default for BranchTree {
 impl BranchTree {
     #[must_use]
     pub fn new() -> Self {
-        Self {
+        Self::with_max_total_branches(DEFAULT_MAX_TOTAL_BRANCHES)
+            .expect("the default branch cap is valid")
+    }
+
+    pub fn with_max_total_branches(max_total_branches: u64) -> Result<Self, SchedulerError> {
+        if max_total_branches == 0 {
+            return Err(SchedulerError::InvalidConfig(
+                "max_total_branches must be greater than zero",
+            ));
+        }
+        Ok(Self {
             nodes: vec![BranchNode {
                 id: BranchId(0),
                 parent: None,
@@ -158,7 +175,8 @@ impl BranchTree {
                 visits: 0,
                 value_sum: 0.0,
             }],
-        }
+            max_total_branches,
+        })
     }
 
     #[must_use]
@@ -174,6 +192,11 @@ impl BranchTree {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty()
+    }
+
+    #[must_use]
+    pub const fn max_total_branches(&self) -> u64 {
+        self.max_total_branches
     }
 
     #[must_use]
@@ -305,6 +328,12 @@ impl BranchTree {
         let end = start
             .checked_add(u64::from(width))
             .ok_or(SchedulerError::CounterOverflow("branch arena"))?;
+        if end > self.max_total_branches {
+            return Err(SchedulerError::BranchLimitExceeded {
+                limit: self.max_total_branches,
+                requested_total: end,
+            });
+        }
         let children: Vec<_> = (start..end).map(BranchId).collect();
 
         self.get_mut(branch)?.state = BranchState::Expanded;

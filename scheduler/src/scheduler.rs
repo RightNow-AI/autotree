@@ -15,6 +15,8 @@ pub struct SchedulerConfig {
     pub seed: u64,
     pub total_token_budget: u64,
     pub per_branch_token_budget: u64,
+    /// Maximum number of nodes in the monotonic branch arena, including the root.
+    pub max_total_branches: u64,
     pub speculative_kill_margin: Option<f64>,
 }
 
@@ -100,7 +102,7 @@ impl Scheduler {
         let budget =
             BudgetController::new(config.total_token_budget, config.per_branch_token_budget)?;
         Ok(Self {
-            tree: BranchTree::new(),
+            tree: BranchTree::with_max_total_branches(config.max_total_branches)?,
             budget,
             policy,
             scorer,
@@ -270,28 +272,37 @@ impl Scheduler {
             return Ok(());
         }
 
+        self.retain_live_pending_scores();
         if eos {
             self.enqueue_commands(emitted);
             return Ok(());
         }
 
         emitted.extend(self.speculative_prune()?);
-        let tree_before_policy = self.tree.clone();
-        let policy_commands = self
-            .policy
-            .on_event(&event, &mut self.tree, &mut self.rng)?;
-        self.validate_policy_commands(&tree_before_policy, &policy_commands)?;
-        let terminal_branches: Vec<_> = policy_commands
-            .iter()
-            .filter_map(|command| match command {
-                Command::Kill { branch, .. } | Command::Finalize { branch } => Some(*branch),
-                Command::ForkAt { .. } | Command::Continue { .. } => None,
-            })
-            .collect();
-        emitted.extend(policy_commands);
-        for branch in terminal_branches {
-            emitted.extend(self.reclaim_completed_ancestors(branch)?);
+        if self.pending_budget_terminals.is_empty() {
+            let tree_before_policy = self.tree.clone();
+            let policy_commands = self
+                .policy
+                .on_event(&event, &mut self.tree, &mut self.rng)?;
+            self.validate_policy_commands(&tree_before_policy, &policy_commands)?;
+            let terminal_branches: Vec<_> = policy_commands
+                .iter()
+                .filter_map(|command| match command {
+                    Command::Kill { branch, .. } | Command::Finalize { branch } => Some(*branch),
+                    Command::ForkAt { .. } | Command::Continue { .. } => None,
+                })
+                .collect();
+            emitted.extend(policy_commands);
+            for branch in terminal_branches {
+                emitted.extend(self.reclaim_completed_ancestors(branch)?);
+            }
         }
+        self.retain_live_pending_scores();
+        self.enqueue_commands(emitted);
+        Ok(())
+    }
+
+    fn retain_live_pending_scores(&mut self) {
         self.pending_external_values.retain(|branch, _| {
             self.tree
                 .get(*branch)
@@ -302,8 +313,6 @@ impl Scheduler {
                 .get(*branch)
                 .is_some_and(|node| node.state().is_live())
         });
-        self.enqueue_commands(emitted);
-        Ok(())
     }
 
     fn pending_deadline_for_current_event(&self) -> Result<u64, SchedulerError> {
@@ -621,6 +630,7 @@ mod tests {
             seed: 0,
             total_token_budget: 10,
             per_branch_token_budget: 10,
+            max_total_branches: crate::DEFAULT_MAX_TOTAL_BRANCHES,
             speculative_kill_margin: None,
         })
         .unwrap();

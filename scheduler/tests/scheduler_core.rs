@@ -1,7 +1,7 @@
 use autotree_scheduler::{
-    BeamConfig, BestFirstConfig, BranchId, BranchState, BranchTree, Command, EngineEvent,
-    KillReason, LogprobScorer, MctsConfig, Policy, PolicyConfig, PolicyRng, Scheduler,
-    SchedulerConfig, SchedulerError,
+    BeamConfig, BestFirstConfig, BranchId, BranchState, BranchTree, Command,
+    DEFAULT_MAX_TOTAL_BRANCHES, EngineEvent, KillReason, LogprobScorer, MctsConfig, Policy,
+    PolicyConfig, PolicyRng, Scheduler, SchedulerConfig, SchedulerError,
 };
 
 struct FailingPolicy;
@@ -51,6 +51,7 @@ fn config(
         seed: 11,
         total_token_budget,
         per_branch_token_budget,
+        max_total_branches: DEFAULT_MAX_TOTAL_BRANCHES,
         speculative_kill_margin,
     }
 }
@@ -466,6 +467,106 @@ fn external_score_for_the_limit_token_arrives_before_terminalization() {
 }
 
 #[test]
+fn budget_terminal_branch_is_not_forked_by_beam_before_external_score_arrives() {
+    let mut scheduler = Scheduler::with_external_values(SchedulerConfig {
+        policy: PolicyConfig::Beam(BeamConfig {
+            width: 2,
+            fork_width: 2,
+            fork_at_tokens: vec![1],
+        }),
+        ..config(100, 1, None)
+    })
+    .unwrap();
+
+    scheduler
+        .feed_event(EngineEvent::TokenSampled {
+            branch: BranchId(0),
+            token: 0,
+            logprob: -0.1,
+        })
+        .unwrap();
+
+    assert!(scheduler.poll_commands().is_empty());
+    assert_eq!(scheduler.tree().len(), 1);
+    scheduler
+        .feed_event(EngineEvent::ValueScored {
+            branch: BranchId(0),
+            score: 0.9,
+        })
+        .expect("the pending terminal must remain a leaf until its score arrives");
+    assert_eq!(
+        scheduler.poll_commands(),
+        vec![Command::Finalize {
+            branch: BranchId(0),
+        }]
+    );
+}
+
+#[test]
+fn budget_terminal_branch_is_not_forked_by_mcts_from_a_sibling_score() {
+    let mut scheduler = Scheduler::with_external_values(SchedulerConfig {
+        policy: PolicyConfig::Mcts(MctsConfig {
+            expansion_width: 2,
+            max_depth: 2,
+            exploration_weight: 1.0,
+        }),
+        ..config(100, 2, None)
+    })
+    .unwrap();
+
+    scheduler
+        .feed_event(EngineEvent::TokenSampled {
+            branch: BranchId(0),
+            token: 0,
+            logprob: 0.0,
+        })
+        .unwrap();
+    scheduler
+        .feed_event(EngineEvent::ValueScored {
+            branch: BranchId(0),
+            score: 0.0,
+        })
+        .unwrap();
+    let _ = scheduler.poll_commands();
+
+    for branch in [BranchId(1), BranchId(2)] {
+        scheduler
+            .feed_event(EngineEvent::TokenSampled {
+                branch,
+                token: u32::try_from(branch.0).unwrap(),
+                logprob: -0.1,
+            })
+            .unwrap();
+    }
+
+    scheduler
+        .feed_event(EngineEvent::ValueScored {
+            branch: BranchId(2),
+            score: 0.5,
+        })
+        .unwrap();
+    assert_eq!(
+        scheduler.tree().get(BranchId(1)).unwrap().state(),
+        BranchState::Active
+    );
+    assert!(
+        scheduler
+            .tree()
+            .get(BranchId(1))
+            .unwrap()
+            .children()
+            .is_empty()
+    );
+
+    scheduler
+        .feed_event(EngineEvent::ValueScored {
+            branch: BranchId(1),
+            score: 0.75,
+        })
+        .expect("the pending terminal must remain a leaf until its score arrives");
+}
+
+#[test]
 fn tree_termination_prefers_scored_branches_over_unscored_logprob_proxies() {
     let mut scheduler = Scheduler::with_external_values(SchedulerConfig {
         policy: PolicyConfig::Beam(BeamConfig {
@@ -565,6 +666,132 @@ fn eos_token_finalizes_without_policy_fork_or_continue() {
         }),
         Err(SchedulerError::BranchNotActive(BranchId(0)))
     );
+}
+
+#[test]
+fn eos_reclamation_drops_an_ancestor_pending_score_before_timeout_processing() {
+    let mut scheduler = Scheduler::with_external_values_and_pending_event_budget(
+        SchedulerConfig {
+            policy: PolicyConfig::Beam(BeamConfig {
+                width: 4,
+                fork_width: 2,
+                fork_at_tokens: vec![1, 2],
+            }),
+            ..config(100, 100, None)
+        },
+        4,
+    )
+    .unwrap();
+
+    scheduler
+        .feed_event(EngineEvent::TokenSampled {
+            branch: BranchId(0),
+            token: 0,
+            logprob: 0.0,
+        })
+        .unwrap();
+    scheduler
+        .feed_event(EngineEvent::ValueScored {
+            branch: BranchId(0),
+            score: 0.0,
+        })
+        .unwrap();
+    let _ = scheduler.poll_commands();
+
+    for branch in [BranchId(1), BranchId(2)] {
+        scheduler
+            .feed_event(EngineEvent::TokenSampled {
+                branch,
+                token: u32::try_from(branch.0).unwrap(),
+                logprob: -0.1,
+            })
+            .unwrap();
+    }
+    scheduler
+        .feed_event(EngineEvent::ValueScored {
+            branch: BranchId(2),
+            score: 0.5,
+        })
+        .unwrap();
+    let _ = scheduler.poll_commands();
+
+    scheduler
+        .feed_event(EngineEvent::token_sampled_with_eos(
+            BranchId(3),
+            3,
+            -0.1,
+            true,
+        ))
+        .unwrap();
+    scheduler
+        .feed_event(EngineEvent::token_sampled_with_eos(
+            BranchId(4),
+            4,
+            -0.1,
+            true,
+        ))
+        .expect("EOS reclamation must clear the dead ancestor's pending score");
+
+    assert_eq!(
+        scheduler.tree().get(BranchId(1)).unwrap().state(),
+        BranchState::Killed
+    );
+    scheduler
+        .feed_event(EngineEvent::TokenSampled {
+            branch: BranchId(5),
+            token: 5,
+            logprob: -0.1,
+        })
+        .expect("a stale ancestor score must not wedge a live sibling subtree");
+}
+
+#[test]
+fn total_branch_cap_rejects_a_fork_before_growing_the_arena() {
+    let mut scheduler = Scheduler::new(SchedulerConfig {
+        policy: PolicyConfig::Beam(BeamConfig {
+            width: 4,
+            fork_width: 4,
+            fork_at_tokens: vec![1, 2],
+        }),
+        max_total_branches: 8,
+        ..config(100, 100, None)
+    })
+    .unwrap();
+
+    scheduler
+        .feed_event(EngineEvent::TokenSampled {
+            branch: BranchId(0),
+            token: 0,
+            logprob: 0.0,
+        })
+        .unwrap();
+    let _ = scheduler.poll_commands();
+
+    for branch in [BranchId(1), BranchId(2), BranchId(3)] {
+        scheduler
+            .feed_event(EngineEvent::TokenSampled {
+                branch,
+                token: u32::try_from(branch.0).unwrap(),
+                logprob: 0.0,
+            })
+            .unwrap();
+    }
+    let error = scheduler
+        .feed_event(EngineEvent::TokenSampled {
+            branch: BranchId(4),
+            token: 4,
+            logprob: 0.0,
+        })
+        .unwrap_err();
+
+    assert_eq!(
+        error,
+        SchedulerError::BranchLimitExceeded {
+            limit: 8,
+            requested_total: 9,
+        }
+    );
+    assert_eq!(scheduler.tree().len(), 5);
 }
 
 #[test]
