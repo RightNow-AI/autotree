@@ -668,6 +668,83 @@ fn eos_token_finalizes_without_policy_fork_or_continue() {
 }
 
 #[test]
+fn eos_reclamation_drops_an_ancestor_pending_score_before_timeout_processing() {
+    let mut scheduler = Scheduler::with_external_values_and_pending_event_budget(
+        SchedulerConfig {
+            policy: PolicyConfig::Beam(BeamConfig {
+                width: 4,
+                fork_width: 2,
+                fork_at_tokens: vec![1, 2],
+            }),
+            ..config(100, 100, None)
+        },
+        4,
+    )
+    .unwrap();
+
+    scheduler
+        .feed_event(EngineEvent::TokenSampled {
+            branch: BranchId(0),
+            token: 0,
+            logprob: 0.0,
+        })
+        .unwrap();
+    scheduler
+        .feed_event(EngineEvent::ValueScored {
+            branch: BranchId(0),
+            score: 0.0,
+        })
+        .unwrap();
+    let _ = scheduler.poll_commands();
+
+    for branch in [BranchId(1), BranchId(2)] {
+        scheduler
+            .feed_event(EngineEvent::TokenSampled {
+                branch,
+                token: u32::try_from(branch.0).unwrap(),
+                logprob: -0.1,
+            })
+            .unwrap();
+    }
+    scheduler
+        .feed_event(EngineEvent::ValueScored {
+            branch: BranchId(2),
+            score: 0.5,
+        })
+        .unwrap();
+    let _ = scheduler.poll_commands();
+
+    scheduler
+        .feed_event(EngineEvent::token_sampled_with_eos(
+            BranchId(3),
+            3,
+            -0.1,
+            true,
+        ))
+        .unwrap();
+    scheduler
+        .feed_event(EngineEvent::token_sampled_with_eos(
+            BranchId(4),
+            4,
+            -0.1,
+            true,
+        ))
+        .expect("EOS reclamation must clear the dead ancestor's pending score");
+
+    assert_eq!(
+        scheduler.tree().get(BranchId(1)).unwrap().state(),
+        BranchState::Killed
+    );
+    scheduler
+        .feed_event(EngineEvent::TokenSampled {
+            branch: BranchId(5),
+            token: 5,
+            logprob: -0.1,
+        })
+        .expect("a stale ancestor score must not wedge a live sibling subtree");
+}
+
+#[test]
 fn pending_external_score_uses_logprob_proxy_after_event_budget() {
     let mut scheduler = Scheduler::with_external_values_and_pending_event_budget(
         SchedulerConfig {

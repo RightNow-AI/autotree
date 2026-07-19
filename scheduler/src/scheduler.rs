@@ -270,6 +270,7 @@ impl Scheduler {
             return Ok(());
         }
 
+        self.retain_live_pending_scores();
         if eos {
             self.enqueue_commands(emitted);
             return Ok(());
@@ -294,6 +295,12 @@ impl Scheduler {
                 emitted.extend(self.reclaim_completed_ancestors(branch)?);
             }
         }
+        self.retain_live_pending_scores();
+        self.enqueue_commands(emitted);
+        Ok(())
+    }
+
+    fn retain_live_pending_scores(&mut self) {
         self.pending_external_values.retain(|branch, _| {
             self.tree
                 .get(*branch)
@@ -304,8 +311,6 @@ impl Scheduler {
                 .get(*branch)
                 .is_some_and(|node| node.state().is_live())
         });
-        self.enqueue_commands(emitted);
-        Ok(())
     }
 
     fn pending_deadline_for_current_event(&self) -> Result<u64, SchedulerError> {
