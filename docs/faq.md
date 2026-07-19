@@ -46,9 +46,10 @@ client in `sdk/` or a direct HTTP request.
 
 ## Is there a playground?
 
-Not in the current repository. The blueprint proposes a browser playground
-that visualizes live branch growth and pruning, but today's live surfaces are
-the HTTP/SSE API and SDK.
+Yes. With the server running, open `http://127.0.0.1:8000/playground`: it is a
+fully offline page served by `autotree-serve` that streams the live tree via
+SSE and visualizes branch growth, pruning, and merging in real time. The
+HTTP/SSE API and SDK are the other live surfaces.
 
 ## Is ThoughtBench a benchmark result?
 
