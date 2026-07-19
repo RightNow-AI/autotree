@@ -3,18 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from dataclasses import InitVar, asdict, dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Literal, Protocol, TypeAlias, runtime_checkable
-from weakref import finalize
-
-
-_STEP_COSTS: dict[int, tuple[tuple[int, ...], tuple[int, ...]]] = {}
-_STEP_COST_FINALIZERS: dict[int, finalize] = {}
-
-
-def _drop_step_costs(counter_id: int) -> None:
-    _STEP_COSTS.pop(counter_id, None)
-    _STEP_COST_FINALIZERS.pop(counter_id, None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,23 +128,21 @@ class TreeSummary:
         return asdict(self)
 
 
-@dataclass(frozen=True, slots=True, weakref_slot=True)
+@dataclass(frozen=True, slots=True)
 class EngineCounters:
     logical_tokens: int
     physical_tokens: int
     useful_tokens: int
     elapsed_seconds: float
     ttft_seconds: float
-    _unique_tokens_per_step: InitVar[tuple[int, ...]] = ()
-    _branch_tokens_per_step: InitVar[tuple[int, ...]] = ()
+    unique_tokens_per_step: tuple[int, ...] = ()
+    branch_tokens_per_step: tuple[int, ...] = ()
 
-    def __post_init__(
-        self,
-        _unique_tokens_per_step: tuple[int, ...],
-        _branch_tokens_per_step: tuple[int, ...],
-    ) -> None:
-        unique = tuple(_unique_tokens_per_step)
-        branch = tuple(_branch_tokens_per_step)
+    def __post_init__(self) -> None:
+        unique = tuple(self.unique_tokens_per_step)
+        branch = tuple(self.branch_tokens_per_step)
+        object.__setattr__(self, "unique_tokens_per_step", unique)
+        object.__setattr__(self, "branch_tokens_per_step", branch)
         if len(unique) != len(branch):
             raise ValueError("step token counters must have matching lengths")
         if any(
@@ -167,19 +155,6 @@ class EngineCounters:
             for unique_count, branch_count in zip(unique, branch, strict=True)
         ):
             raise ValueError("unique step tokens cannot exceed branch step tokens")
-        counter_id = id(self)
-        _STEP_COSTS[counter_id] = (unique, branch)
-        _STEP_COST_FINALIZERS[counter_id] = finalize(self, _drop_step_costs, counter_id)
-
-    @property
-    def unique_tokens_per_step(self) -> tuple[int, ...]:
-        """Measured distinct logical token paths produced by each decode forward."""
-        return _STEP_COSTS[id(self)][0]
-
-    @property
-    def branch_tokens_per_step(self) -> tuple[int, ...]:
-        """Measured sum-over-branches token count for each decode forward."""
-        return _STEP_COSTS[id(self)][1]
 
 
 @dataclass(frozen=True, slots=True)

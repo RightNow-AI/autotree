@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
-from dataclasses import replace
+from dataclasses import asdict, replace
 
 import pytest
 
@@ -221,6 +221,8 @@ def test_convergent_children_batch_dedup_merge_and_measure_step_costs(
     )
     assert done.counters.unique_tokens_per_step == (1, 1)
     assert done.counters.branch_tokens_per_step == (1, 2)
+    assert asdict(done.counters)["unique_tokens_per_step"] == (1, 1)
+    assert asdict(done.counters)["branch_tokens_per_step"] == (1, 2)
 
 
 def test_same_seed_produces_identical_winning_completion(tiny_engine_case) -> None:

@@ -434,8 +434,8 @@ class TreeKVEngine:
                 useful_tokens=useful_tokens,
                 elapsed_seconds=max(ended_at - started_at, 1e-9),
                 ttft_seconds=max((first_token_at or ended_at) - started_at, 0.0),
-                _unique_tokens_per_step=tuple(unique_tokens_per_step),
-                _branch_tokens_per_step=tuple(branch_tokens_per_step),
+                unique_tokens_per_step=tuple(unique_tokens_per_step),
+                branch_tokens_per_step=tuple(branch_tokens_per_step),
             ),
             tree_summary=summary,
         )
