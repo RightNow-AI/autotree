@@ -32,7 +32,12 @@ def _bootstrap_project() -> int | None:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Regenerate all AutoTree paper figures")
-    parser.add_argument("--results", type=Path, required=True, help="figure bundle JSON")
+    parser.add_argument(
+        "--results",
+        type=Path,
+        default=Path(__file__).resolve().parent / "fixtures" / "all-figures.fixture.json",
+        help="figure bundle JSON (default: bundled publication fixture)",
+    )
     parser.add_argument("--out", type=Path, required=True, help="output directory")
     return parser
 

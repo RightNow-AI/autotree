@@ -56,7 +56,7 @@ def test_manifest_records_inputs_sources_and_output_hashes(
     assert on_disk == manifest
     assert manifest["input"]["sha256"] == _sha256(BUNDLE_PATH)
     assert {item["id"] for item in manifest["figures"]} == EXPECTED_IDS
-    assert len(manifest["sources"]) == 10
+    assert len(manifest["sources"]) == 22
     for source in manifest["sources"]:
         assert source["sha256"] == _sha256(BUNDLE_PATH.parent / source["path"])
     for figure in manifest["figures"]:

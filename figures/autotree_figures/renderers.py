@@ -46,23 +46,53 @@ def _source_paths(runs: list[LoadedRun]) -> tuple[str, ...]:
     return tuple(run.reference.path for run in runs)
 
 
+def _group_by_model(runs: list[LoadedRun]) -> dict[str, list[LoadedRun]]:
+    grouped: dict[str, list[LoadedRun]] = {}
+    for run in runs:
+        model = run.reference.model or str(run.payload["engine_config"]["model"])
+        grouped.setdefault(model, []).append(run)
+    return grouped
+
+
+def _system(run: LoadedRun) -> str:
+    return run.reference.system or run.reference.label
+
+
 def render_scaling(bundle: LoadedBundle, stem: Path) -> RenderedFigure:
     runs = _runs(bundle, "scaling")
-    figure, axis = plt.subplots(figsize=(6.8, 4.2), constrained_layout=True)
-    for index, run in enumerate(runs):
-        points = metric_points(run)
-        axis.errorbar(
-            [point.total_tokens for point in points],
-            [point.accuracy for point in points],
-            yerr=[point.accuracy_error for point in points],
-            marker="o",
-            capsize=3,
-            color=PALETTE[index % len(PALETTE)],
-            label=run.reference.label,
-        )
-    axis.set(title="Accuracy vs. token budget", xlabel="Mean tokens across tasks", ylabel="Accuracy@k")
-    axis.set_ylim(-0.03, 1.03)
-    axis.legend(title="Mean ± 1 SD over seeds")
+    grouped = _group_by_model(runs)
+    if len(grouped) != 4:
+        raise ValueError("accuracy-vs-tokens requires exactly four model groups")
+    figure, axes = plt.subplots(2, 2, figsize=(7.2, 5.2), constrained_layout=True, sharey=True)
+    styles = {"Sequential": "--", "AutoTree": "-"}
+    for axis, (model, model_runs) in zip(axes.flat, grouped.items(), strict=True):
+        systems = {_system(run) for run in model_runs}
+        if systems != set(styles):
+            raise ValueError(f"scaling model {model!r} requires Sequential and AutoTree series")
+        for index, run in enumerate(model_runs):
+            points = metric_points(run)
+            system = _system(run)
+            axis.errorbar(
+                [point.total_tokens for point in points],
+                [point.accuracy for point in points],
+                yerr=[point.accuracy_error for point in points],
+                marker="o",
+                capsize=2.5,
+                color=PALETTE[index % len(PALETTE)],
+                linestyle=styles.get(system, "-"),
+                label=system,
+            )
+        axis.set(title=model, xlabel="Mean tokens across tasks", ylabel="Accuracy@k")
+        axis.set_ylim(-0.03, 1.03)
+    handles, labels = axes.flat[0].get_legend_handles_labels()
+    figure.legend(
+        handles,
+        labels,
+        loc="lower center",
+        bbox_to_anchor=(0.5, 1.01),
+        ncols=2,
+    )
+    figure.suptitle("Accuracy vs. token budget", y=1.08)
     provenance = _run_provenance(runs)
     files = save_figure(figure, stem, provenance=provenance)
     plt.close(figure)
@@ -81,28 +111,47 @@ def _pareto_indices(costs: list[float], accuracies: list[float]) -> list[int]:
 
 def render_pareto(bundle: LoadedBundle, stem: Path) -> RenderedFigure:
     runs = _runs(bundle, "pareto")
-    figure, axis = plt.subplots(figsize=(6.8, 4.2), constrained_layout=True)
-    for index, run in enumerate(runs):
-        points = metric_points(run)
-        costs = [point.total_cost_usd for point in points]
-        accuracies = [point.accuracy for point in points]
-        color = PALETTE[index % len(PALETTE)]
-        axis.errorbar(
-            costs,
-            accuracies,
-            yerr=[point.accuracy_error for point in points],
-            fmt="o",
-            capsize=3,
-            color=color,
-            alpha=0.65,
-            label=run.reference.label,
-        )
-        frontier = _pareto_indices(costs, accuracies)
-        axis.plot([costs[item] for item in frontier], [accuracies[item] for item in frontier], color=color)
-    axis.set(title="Cost-accuracy Pareto frontier", xlabel="Mean run cost (USD)", ylabel="Accuracy@k")
-    axis.set_ylim(-0.03, 1.03)
-    axis.ticklabel_format(axis="x", style="sci", scilimits=(-3, 3))
-    axis.legend(title="Mean ± 1 SD over seeds")
+    grouped = _group_by_model(runs)
+    if len(grouped) != 4:
+        raise ValueError("cost-accuracy Pareto requires exactly four model groups")
+    figure, axes = plt.subplots(2, 2, figsize=(7.2, 5.2), constrained_layout=True, sharey=True)
+    markers = {"vLLM": "s", "SGLang": "^", "AutoTree": "o"}
+    for axis, (model, model_runs) in zip(axes.flat, grouped.items(), strict=True):
+        systems = {_system(run) for run in model_runs}
+        if systems != set(markers):
+            raise ValueError(f"Pareto model {model!r} requires vLLM, SGLang, and AutoTree series")
+        for index, run in enumerate(model_runs):
+            points = metric_points(run)
+            if any(point.cost_per_correct_usd is None for point in points):
+                raise ValueError(f"{run.path} has no cost-per-correct measurements")
+            costs = [float(point.cost_per_correct_usd) for point in points]
+            accuracies = [point.accuracy for point in points]
+            color = PALETTE[index % len(PALETTE)]
+            system = _system(run)
+            axis.errorbar(
+                costs,
+                accuracies,
+                yerr=[point.accuracy_error for point in points],
+                fmt=markers.get(system, "o"),
+                capsize=2.5,
+                color=color,
+                alpha=0.75,
+                label=system,
+            )
+            frontier = _pareto_indices(costs, accuracies)
+            axis.plot([costs[item] for item in frontier], [accuracies[item] for item in frontier], color=color)
+        axis.set(title=model, xlabel="Cost per correct answer (USD)", ylabel="Accuracy@k")
+        axis.set_ylim(-0.03, 1.03)
+        axis.ticklabel_format(axis="x", style="sci", scilimits=(-3, 3))
+    handles, labels = axes.flat[0].get_legend_handles_labels()
+    figure.legend(
+        handles,
+        labels,
+        loc="lower center",
+        bbox_to_anchor=(0.5, 1.01),
+        ncols=3,
+    )
+    figure.suptitle("Cost-accuracy Pareto frontier", y=1.08)
     provenance = _run_provenance(runs)
     files = save_figure(figure, stem, provenance=provenance)
     plt.close(figure)
@@ -113,7 +162,7 @@ def render_kv_reuse(bundle: LoadedBundle, stem: Path) -> RenderedFigure:
     spec = bundle.spec.supplemental.kv_reuse_heatmap
     values = np.asarray(spec.values, dtype=float)
     figure, axis = plt.subplots(figsize=(6.4, 4.3), constrained_layout=True)
-    image = axis.imshow(values, vmin=0, vmax=1, cmap="viridis", aspect="auto", origin="lower")
+    image = axis.imshow(values, vmin=1, vmax=float(values.max()), cmap="viridis", aspect="auto", origin="lower")
     axis.set(
         title="KV reuse by tree shape",
         xlabel="Branching factor",
@@ -125,9 +174,10 @@ def render_kv_reuse(bundle: LoadedBundle, stem: Path) -> RenderedFigure:
     )
     for row in range(values.shape[0]):
         for column in range(values.shape[1]):
-            color = "white" if values[row, column] < 0.48 else "black"
-            axis.text(column, row, f"{values[row, column]:.2f}", ha="center", va="center", color=color, fontsize=7)
-    figure.colorbar(image, ax=axis, label="KV reuse ratio")
+            midpoint = 1 + (float(values.max()) - 1) / 2
+            color = "white" if values[row, column] < midpoint else "black"
+            axis.text(column, row, f"{values[row, column]:.1f}×", ha="center", va="center", color=color, fontsize=7)
+    figure.colorbar(image, ax=axis, label="KV reuse ratio (logical / physical tokens)")
     provenance = spec.provenance.model_dump(exclude_none=True)
     files = save_figure(figure, stem, provenance=provenance)
     plt.close(figure)
@@ -219,6 +269,8 @@ def render_branching(bundle: LoadedBundle, stem: Path) -> RenderedFigure:
         branches.append(branch_count(run))
         accuracy.append(point.accuracy)
         errors.append(point.accuracy_error)
+    if branches != [1, 2, 4, 8, 16, 32]:
+        raise ValueError("branching ablation requires k in {1, 2, 4, 8, 16, 32}")
     figure, axis = plt.subplots(figsize=(6.8, 4.2), constrained_layout=True)
     axis.errorbar(branches, accuracy, yerr=errors, marker="o", capsize=3, color=PALETTE[0])
     axis.set_xscale("log", base=2)
@@ -241,14 +293,16 @@ def render_throughput(bundle: LoadedBundle, stem: Path) -> RenderedFigure:
         available = [point for point in metric_points(run) if point.throughput is not None]
         if not available:
             raise ValueError(f"{run.path} has no rollout throughput metrics")
-        labels.append(run.reference.label)
+        labels.append(_system(run))
         values.append(mean(point.throughput for point in available if point.throughput is not None))
         errors.append(mean(point.throughput_error or 0.0 for point in available))
+    if set(labels) != {"Sequential", "vLLM", "SGLang", "AutoTree"}:
+        raise ValueError("throughput panel requires Sequential, vLLM, SGLang, and AutoTree")
     figure, axis = plt.subplots(figsize=(6.8, 4.2), constrained_layout=True)
     positions = np.arange(len(labels))
     axis.bar(positions, values, yerr=errors, capsize=4, color=PALETTE[: len(labels)])
     axis.set_xticks(positions, labels=labels)
-    axis.set(title="Rollout throughput", ylabel="Rollouts per hour", xlabel="Execution mode")
+    axis.set(title="Rollout throughput", ylabel="Rollouts per hour per GPU", xlabel="Execution mode")
     axis.text(0.02, 0.97, "Bars: budget mean; error: mean seed SD", transform=axis.transAxes, va="top", fontsize=7)
     provenance = _run_provenance(runs)
     files = save_figure(figure, stem, provenance=provenance)
