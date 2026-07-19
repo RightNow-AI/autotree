@@ -38,7 +38,10 @@ describe("ThoughtBench results contract", () => {
   });
 
   it("rejects the superseded thoughtbench.results.v1 contract", () => {
-    expect(() => validateResultsDocument(fixtureCopy())).toThrow(
+    const document = fixtureCopy();
+    document.schema_version = "thoughtbench.results.v1";
+
+    expect(() => validateResultsDocument(document)).toThrow(
       /schema_version/,
     );
   });
