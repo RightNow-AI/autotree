@@ -178,6 +178,40 @@ class MeanRankingScheduler:
         return commands
 
 
+class EosForkScheduler:
+    """Fork non-terminal tokens, but finalize immediately when eos is explicit."""
+
+    def __init__(
+        self,
+        config: dict[str, object],
+        observed_events: list[dict[str, object]],
+    ) -> None:
+        self.config = config
+        self.observed_events = observed_events
+        self._commands: deque[dict[str, object]] = deque()
+
+    def feed_event(self, event: dict[str, object]) -> None:
+        self.observed_events.append(event)
+        if event["type"] != "token_sampled":
+            return
+        if event.get("eos", False):
+            self._commands.append({"type": "finalize", "branch": event["branch"]})
+        else:
+            self._commands.extend(
+                [
+                    {"type": "fork_at", "branch": event["branch"], "width": 2},
+                    {"type": "finalize", "branch": 1},
+                    {"type": "finalize", "branch": 2},
+                    {"type": "kill", "branch": 0, "reason": "fork_replaced"},
+                ]
+            )
+
+    def poll_commands(self) -> list[dict[str, object]]:
+        commands = list(self._commands)
+        self._commands.clear()
+        return commands
+
+
 def request(*, budget_tokens: int = 3) -> GenerationRequest:
     return GenerationRequest(
         model="tiny-engine-model",
@@ -409,6 +443,34 @@ def test_eos_feeds_branch_exhausted_and_finishes_with_stop(
         "branch_exhausted",
     ]
     done = next(event for event in events if isinstance(event, GenerationDone))
+    assert done.finish_reason == "stop"
+
+
+def test_eos_token_is_not_forked_after_sampling(tiny_engine_case) -> None:
+    observed_events: list[dict[str, object]] = []
+    expected_id = int(
+        tiny_engine_case.executor.prefill([5, 6, 7, 8]).next_logits(0).argmax().item()
+    )
+    tiny_engine_case.tokenizer.eos_token_id = expected_id
+    engine = TreeKVEngine(
+        model_id="tiny-engine-model",
+        executor=tiny_engine_case.executor,
+        tokenizer=tiny_engine_case.tokenizer,
+        scheduler_factory=lambda config: EosForkScheduler(config, observed_events),
+    )
+
+    events = asyncio.run(collect(engine, request()))
+
+    starts = [event for event in events if isinstance(event, BranchStarted)]
+    assert [(event.branch_id, event.parent_id) for event in starts] == [
+        ("branch-0", None)
+    ]
+    sampled = next(
+        event for event in observed_events if event["type"] == "token_sampled"
+    )
+    assert sampled["eos"] is True
+    done = next(event for event in events if isinstance(event, GenerationDone))
+    assert done.branch_id == "branch-0"
     assert done.finish_reason == "stop"
 
 

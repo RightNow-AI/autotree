@@ -244,7 +244,10 @@ class TreeKVEngine:
                 path_text[branch_id] += token
                 scores[branch_id] += logprob
                 completion_tokens += 1
-                if self._token_exhausts_branch(token_id, path_text[branch_id], request):
+                branch_exhausted = self._token_exhausts_branch(
+                    token_id, path_text[branch_id], request
+                )
+                if branch_exhausted:
                     exhaustion_pending.add(branch_id)
                     stopped.add(branch_id)
                 if first_token_at is None:
@@ -256,6 +259,7 @@ class TreeKVEngine:
                         "branch": branch_id,
                         "token": token_id,
                         "logprob": logprob,
+                        "eos": branch_exhausted,
                     }
                 )
                 if self._uses_external_scorer(request):
