@@ -3,14 +3,26 @@ use std::collections::BTreeMap;
 use crate::{BranchId, BranchTree, BudgetController, MAX_BRANCH_WIDTH, SchedulerError};
 
 /// Entropy-triggered fork controls. Entropy is measured in natural-log units (nats).
+///
+/// Adaptive forking is orthogonal to the configured policy: this controller decides whether and
+/// how widely to fork, while beam, best-first, or MCTS still selects and prunes the resulting
+/// frontier. The width formula is
+/// `min(max_fork_width, min_fork_width + floor((entropy - threshold) / entropy_step))`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AdaptiveForkConfig {
+    /// Minimum predictive entropy that permits a fork.
     pub entropy_threshold_nats: f64,
+    /// Required number of generated tokens between an ancestor fork and a descendant fork.
     pub min_tokens_between_forks: u64,
+    /// Maximum number of branch nodes allocated in the tree, including terminal nodes.
     pub max_total_branches: u64,
+    /// Maximum tree depth at which a branch may fork.
     pub max_depth: u32,
+    /// Width used at the threshold.
     pub min_fork_width: u32,
+    /// Upper bound on entropy-scaled width.
     pub max_fork_width: u32,
+    /// Entropy excess, in nats, required for each branch beyond `min_fork_width`.
     pub entropy_nats_per_extra_branch: f64,
 }
 
@@ -101,7 +113,8 @@ impl AdaptiveForkController {
         }
 
         // A fork is minimally viable only if every new child can decode one token. Existing
-        // Continue commands reserve their next token first, matching enqueue-time enforcement.
+        // Continue commands reserve their next token first, matching enqueue-time enforcement;
+        // the inherited root-to-child path must also remain below the per-branch limit.
         let available_total = budget
             .remaining_total()
             .saturating_sub(reserved_continuations);

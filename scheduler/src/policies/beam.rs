@@ -79,7 +79,6 @@ impl Policy for BeamPolicy {
         _rng: &mut PolicyRng,
     ) -> Result<Vec<Command>, SchedulerError> {
         let mut commands = Vec::new();
-        let mut forked = false;
         if event.is_token_sampled() {
             let frontier = tree.active_frontier();
             let common_tokens = frontier.first().and_then(|first| {
@@ -100,11 +99,9 @@ impl Policy for BeamPolicy {
                         width: self.fork_width,
                     });
                 }
-                forked = true;
             }
         }
 
-        let _ = forked;
         commands.extend(self.prune_and_continue(tree)?);
         Ok(commands)
     }
