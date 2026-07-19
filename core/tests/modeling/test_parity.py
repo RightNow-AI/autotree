@@ -5,6 +5,8 @@ from typing import Any
 
 import torch
 
+import autotree_core.modeling.executor as executor_module
+
 from .conftest import ModelCase
 
 
@@ -73,6 +75,78 @@ def test_tree_fork_has_bit_parity_with_sequential_execution(
             tree_k, tree_v = tree.gather_kv(child_id, layer)
             assert torch.equal(tree_k, sequential_k)
             assert torch.equal(tree_v, sequential_v)
+
+
+def test_forest_batch_is_bit_identical_to_old_per_branch_decode(
+    model_case: ModelCase,
+    monkeypatch,
+) -> None:
+    executor = model_case.executor
+    prompt = model_case.prompt[:5]
+    forest = executor.prefill(prompt)
+    shorter_id = executor.fork(forest, forest.root_id)
+
+    longer_baseline = executor.prefill(prompt)
+    shorter_baseline = executor.prefill(prompt)
+    setup_token = int(torch.argmax(forest.next_logits(forest.root_id)).item())
+    executor.decode(forest, forest.root_id, setup_token)
+    executor.decode(longer_baseline, longer_baseline.root_id, setup_token)
+
+    longer_token = int(torch.argmax(forest.next_logits(forest.root_id)).item())
+    shorter_token = int(torch.argmax(forest.next_logits(shorter_id)).item())
+    longer_step = executor.decode(
+        longer_baseline, longer_baseline.root_id, longer_token
+    )
+    shorter_step = executor.decode(
+        shorter_baseline, shorter_baseline.root_id, shorter_token
+    )
+
+    forward_calls = 0
+    dispatch_contexts: list[list[int]] = []
+    original_forward = executor.model.forward
+    original_dispatch = executor_module.tree_attention_decode
+    original_attention_implementation = executor.model.config._attn_implementation
+
+    def counted_forward(*args, **kwargs):
+        nonlocal forward_calls
+        forward_calls += 1
+        return original_forward(*args, **kwargs)
+
+    def counted_dispatch(*args, **kwargs):
+        dispatch_contexts.append(args[4].tolist())
+        return original_dispatch(*args, **kwargs)
+
+    monkeypatch.setattr(executor.model, "forward", counted_forward)
+    monkeypatch.setattr(executor_module, "tree_attention_decode", counted_dispatch)
+    batch_steps = executor.decode_batch(
+        forest,
+        [forest.root_id, shorter_id],
+        [longer_token, shorter_token],
+    )
+
+    assert forward_calls == 1
+    assert dispatch_contexts == [[7, 6]] * executor.num_layers
+    assert (
+        executor.model.config._attn_implementation == original_attention_implementation
+    )
+    assert torch.equal(batch_steps[0].logits, longer_step.logits), float(
+        (batch_steps[0].logits - longer_step.logits).abs().max()
+    )
+    assert torch.equal(batch_steps[1].logits, shorter_step.logits), float(
+        (batch_steps[1].logits - shorter_step.logits).abs().max()
+    )
+    for layer in range(executor.num_layers):
+        longer_k, longer_v = longer_baseline.gather_kv(longer_baseline.root_id, layer)
+        forest_longer_k, forest_longer_v = forest.gather_kv(forest.root_id, layer)
+        assert torch.equal(forest_longer_k, longer_k)
+        assert torch.equal(forest_longer_v, longer_v)
+
+        shorter_k, shorter_v = shorter_baseline.gather_kv(
+            shorter_baseline.root_id, layer
+        )
+        forest_shorter_k, forest_shorter_v = forest.gather_kv(shorter_id, layer)
+        assert torch.equal(forest_shorter_k, shorter_k)
+        assert torch.equal(forest_shorter_v, shorter_v)
 
 
 def test_greedy_tokens_equal_stock_huggingface_generate(

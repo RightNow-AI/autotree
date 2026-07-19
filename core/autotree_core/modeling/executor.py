@@ -2,16 +2,25 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass, field
+from importlib import import_module
 from math import ceil
-from typing import Any, Iterable, Sequence
+from threading import RLock
+from types import MethodType
+from typing import Any, Iterable, Iterator, Sequence
 
 import torch
 from transformers import AutoModelForCausalLM, DynamicCache, PreTrainedModel
+from transformers.pytorch_utils import Conv1D
 
+from autotree_core.kernels.dispatch import tree_attention_decode
 from autotree_core.kv import KVPoolConfig, KVStats, PagedKVPool, TreeState
 
 from .config import ModelExecutorConfig
+
+
+_FOREST_FORWARD_LOCK = RLock()
 
 
 def _cache_pairs(cache: Any) -> tuple[tuple[torch.Tensor, torch.Tensor], ...]:
@@ -44,6 +53,18 @@ def _pool_layout(cache: Any) -> tuple[torch.Tensor, torch.Tensor]:
     return torch.stack(keys), torch.stack(values)
 
 
+def _pool_layout_batch(cache: Any) -> tuple[torch.Tensor, torch.Tensor]:
+    """Convert an HF cache to ``[layers, batch, tokens, heads, dim]``."""
+    keys: list[torch.Tensor] = []
+    values: list[torch.Tensor] = []
+    for key, value in _cache_pairs(cache):
+        if key.ndim != 4 or value.ndim != 4 or key.shape != value.shape:
+            raise ValueError("model KV tensors must match [batch, heads, tokens, dim]")
+        keys.append(key.transpose(1, 2).detach().contiguous())
+        values.append(value.transpose(1, 2).detach().contiguous())
+    return torch.stack(keys), torch.stack(values)
+
+
 def _dynamic_cache(
     pairs: Iterable[tuple[torch.Tensor, torch.Tensor]],
     model_config: Any,
@@ -56,7 +77,56 @@ def _dynamic_cache(
         cache = DynamicCache()
         for layer_idx, (key, value) in enumerate(materialized):
             cache.update(key, value, layer_idx)
-        return cache
+    return cache
+
+
+@contextmanager
+def _branchwise_cpu_linears(model: PreTrainedModel) -> Iterator[None]:
+    """Keep CPU forest rows bit-identical to batch-one linear projections.
+
+    CPU BLAS may select a different reduction kernel when the leading batch
+    dimension grows, which changes fp32 rounding. The forest still enters the
+    model once with ``batch == branches``; only CPU linear projections are
+    evaluated row-by-row so the established batch-one parity contract remains
+    byte exact. CUDA keeps the native batched projections.
+    """
+    if next(model.parameters()).device.type != "cpu":
+        yield
+        return
+
+    missing = object()
+    overrides: list[tuple[torch.nn.Module, object]] = []
+    for module in model.modules():
+        if not isinstance(module, (torch.nn.Linear, Conv1D)):
+            continue
+        previous = module.__dict__.get("forward", missing)
+        original = module.forward
+
+        def branchwise_forward(
+            self: torch.nn.Module,
+            inputs: torch.Tensor,
+            _original: Any = original,
+        ) -> torch.Tensor:
+            if inputs.ndim < 2 or inputs.shape[0] <= 1:
+                return _original(inputs)
+            return torch.cat(
+                tuple(
+                    _original(inputs[row : row + 1]) for row in range(inputs.shape[0])
+                ),
+                dim=0,
+            )
+
+        overrides.append((module, previous))
+        module.forward = MethodType(branchwise_forward, module)
+
+    try:
+        yield
+    finally:
+        for module, previous in reversed(overrides):
+            if previous is missing:
+                delattr(module, "forward")
+            else:
+                module.forward = previous  # type: ignore[method-assign,assignment]
 
 
 @dataclass(frozen=True, slots=True)
@@ -279,6 +349,168 @@ class ModelExecutor:
         execution._token_ids[branch_id].append(token_id)
         return DecodeOutput(
             branch_id=branch_id, token_id=token_id, logits=logits.clone()
+        )
+
+    def decode_batch(
+        self,
+        execution: ModelExecution,
+        branch_ids: Sequence[int],
+        token_ids: Sequence[int],
+    ) -> tuple[DecodeOutput, ...]:
+        """Append one token to each branch in one model forward."""
+        self._require_execution(execution)
+        selected = tuple(branch_ids)
+        tokens = tuple(token_ids)
+        if not selected or len(selected) != len(tokens):
+            raise ValueError(
+                "branch_ids and token_ids must be non-empty and equal length"
+            )
+        if len(set(selected)) != len(selected):
+            raise ValueError("branch_ids must be unique")
+        if any(
+            isinstance(token, bool) or not isinstance(token, int) for token in tokens
+        ):
+            raise TypeError("every token_id must be an integer")
+
+        branches = [execution.tree.get_branch(branch_id) for branch_id in selected]
+        input_ids = torch.tensor(
+            tokens, dtype=torch.long, device=self.config.device
+        ).unsqueeze(1)
+        position_ids = torch.tensor(
+            [branch.num_tokens for branch in branches],
+            dtype=torch.long,
+            device=self.config.device,
+        ).unsqueeze(1)
+        output = self._forest_forward(execution, selected, input_ids, position_ids)
+        keys, values = _pool_layout_batch(output.past_key_values)
+        if keys.shape[1:3] != (len(selected), 1):
+            raise ValueError(
+                "forest decode must return exactly one KV token per branch"
+            )
+        outputs: list[DecodeOutput] = []
+        for row, (branch_id, token_id) in enumerate(zip(selected, tokens, strict=True)):
+            execution.tree.append_token(branch_id, keys[:, row, -1], values[:, row, -1])
+            logits = output.logits[row, -1].detach().contiguous()
+            execution._next_logits[branch_id] = logits
+            execution._token_ids[branch_id].append(token_id)
+            outputs.append(
+                DecodeOutput(
+                    branch_id=branch_id, token_id=token_id, logits=logits.clone()
+                )
+            )
+        return tuple(outputs)
+
+    def _forest_forward(
+        self,
+        execution: ModelExecution,
+        branch_ids: tuple[int, ...],
+        input_ids: torch.Tensor,
+        position_ids: torch.Tensor,
+    ) -> Any:
+        """Run one branch-batched forward through the paged attention seam."""
+        model_module = import_module(self.model.__class__.__module__)
+        original_attention = getattr(model_module, "eager_attention_forward", None)
+        if original_attention is None:
+            raise RuntimeError(
+                f"{self.model.__class__.__name__} does not expose an eager attention "
+                "interface that AutoTree can bind to tree_attention_decode"
+            )
+
+        def forest_attention(
+            module: torch.nn.Module,
+            query: torch.Tensor,
+            key: torch.Tensor,
+            value: torch.Tensor,
+            _attention_mask: torch.Tensor | None,
+            *args: Any,
+            **kwargs: Any,
+        ) -> tuple[torch.Tensor, None]:
+            layer_idx = getattr(module, "layer_idx", None)
+            if isinstance(layer_idx, bool) or not isinstance(layer_idx, int):
+                raise RuntimeError(
+                    "model attention module does not expose an integer layer_idx"
+                )
+            if query.ndim != 4 or query.shape[2] != 1:
+                raise ValueError("forest decode expects one query token per branch")
+            if key.ndim != 4 or value.shape != key.shape or key.shape[2] != 1:
+                raise ValueError("forest decode expects one new K/V token per branch")
+            output = self._forest_attention_decode(
+                execution,
+                branch_ids,
+                layer_idx,
+                query[:, :, 0],
+                key[:, :, 0],
+                value[:, :, 0],
+                scale=kwargs.get("scaling"),
+            )
+            return output.unsqueeze(1), None
+
+        with _FOREST_FORWARD_LOCK:
+            original_implementation = self.model.config._attn_implementation
+            setattr(model_module, "eager_attention_forward", forest_attention)
+            self.model.config._attn_implementation = "eager"
+            try:
+                with _branchwise_cpu_linears(self.model), torch.inference_mode():
+                    return self.model(
+                        input_ids=input_ids,
+                        attention_mask=torch.ones_like(input_ids),
+                        position_ids=position_ids,
+                        use_cache=True,
+                        return_dict=True,
+                    )
+            finally:
+                self.model.config._attn_implementation = original_implementation
+                setattr(model_module, "eager_attention_forward", original_attention)
+
+    def _forest_attention_decode(
+        self,
+        execution: ModelExecution,
+        branch_ids: tuple[int, ...],
+        layer: int,
+        query: torch.Tensor,
+        new_key: torch.Tensor,
+        new_value: torch.Tensor,
+        *,
+        scale: float | None,
+    ) -> torch.Tensor:
+        """Add step-local K/V page views and dispatch one paged forest attention."""
+        block_tables, context_lens = execution.attention_metadata(branch_ids)
+        page_size = execution.pool.config.page_size
+        temp_keys = execution.pool.k_cache[layer].new_zeros(
+            (len(branch_ids), page_size, self.num_kv_heads, self.head_dim)
+        )
+        temp_values = execution.pool.v_cache[layer].new_zeros(temp_keys.shape)
+        extended_tables = torch.full(
+            (len(branch_ids), block_tables.shape[1] + 1),
+            -1,
+            dtype=torch.int32,
+            device=self.config.device,
+        )
+        if block_tables.shape[1]:
+            extended_tables[:, : block_tables.shape[1]] = block_tables
+
+        base_page_count = execution.pool.k_cache[layer].shape[0]
+        for row, branch_id in enumerate(branch_ids):
+            branch = execution.tree.get_branch(branch_id)
+            offset = branch.num_tokens % page_size
+            temp_page_id = base_page_count + row
+            if offset:
+                source_page_id = branch.block_table[-1]
+                temp_keys[row].copy_(execution.pool.k_cache[layer][source_page_id])
+                temp_values[row].copy_(execution.pool.v_cache[layer][source_page_id])
+                extended_tables[row, len(branch.block_table) - 1] = temp_page_id
+            else:
+                extended_tables[row, len(branch.block_table)] = temp_page_id
+            temp_keys[row, offset].copy_(new_key[row])
+            temp_values[row, offset].copy_(new_value[row])
+
+        return tree_attention_decode(
+            query,
+            torch.cat((execution.pool.k_cache[layer], temp_keys), dim=0),
+            torch.cat((execution.pool.v_cache[layer], temp_values), dim=0),
+            extended_tables,
+            context_lens + 1,
+            None if scale is None else float(scale),
         )
 
     def fork(self, execution: ModelExecution, branch_id: int) -> int:
