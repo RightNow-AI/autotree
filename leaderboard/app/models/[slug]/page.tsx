@@ -3,6 +3,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { loadResults, modelSlug } from "../../../lib/results";
+import { formatKvReuseRatio } from "../../../lib/view-model";
 
 export const dynamicParams = false;
 
@@ -123,7 +124,7 @@ export default async function ModelPage({
                   <td>{formatUsd(cell.metrics.cost_per_correct_usd)}</td>
                   <td>{formatNumber(cell.metrics.tokens_per_second.mean)}</td>
                   <td>{cell.metrics.ttft_seconds.mean === null ? "not reported" : `${formatNumber(cell.metrics.ttft_seconds.mean, 4)} s`}</td>
-                  <td>{formatPercent(cell.metrics.kv_reuse_ratio.mean)}</td>
+                  <td>{formatKvReuseRatio(cell.metrics.kv_reuse_ratio.mean)}</td>
                   <td>{formatPercent(cell.metrics.useful_token_ratio.mean)}</td>
                 </tr>
               ))}

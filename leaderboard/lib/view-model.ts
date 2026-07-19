@@ -13,6 +13,10 @@ export type ChartPoint = {
   meanCostUsd: number;
 };
 
+export function formatKvReuseRatio(value: number | null): string {
+  return value === null ? "not reported" : `${value.toFixed(1)}x`;
+}
+
 function mean(values: number[]): number {
   return values.reduce((total, value) => total + value, 0) / values.length;
 }

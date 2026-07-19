@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const RESULTS_SCHEMA_VERSION = "thoughtbench.results.v1";
+export const RESULTS_SCHEMA_VERSION = "thoughtbench.results.v2";
 export const FIXTURE_NOTICE =
   "FIXTURE TASKS ONLY - NOT A REAL BENCHMARK RESULT.";
 
@@ -122,7 +122,7 @@ const sampleResultSchema = strictObject({
   ttft_seconds: z.number().nonnegative().nullable(),
   tokens_per_second: z.number().nonnegative().nullable(),
   rollout_throughput_per_hour: z.number().nonnegative().nullable(),
-  kv_reuse_ratio: z.number().min(0).max(1).nullable(),
+  kv_reuse_ratio: z.number().min(1).nullable(),
   useful_token_ratio: z.number().min(0).max(1).nullable(),
   tree: treeStatsSchema.nullable(),
 });
