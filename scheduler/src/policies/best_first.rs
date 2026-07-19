@@ -56,17 +56,13 @@ impl Policy for BestFirstPolicy {
         tree: &mut BranchTree,
         _rng: &mut PolicyRng,
     ) -> Result<Vec<Command>, SchedulerError> {
-        let ranked = Self::ranked_frontier(tree);
-        if ranked.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let unscored: Vec<_> = ranked
-            .iter()
-            .copied()
-            .filter(|branch| !tree.get(*branch).expect("known branch").has_value())
+        // External scores arrive independently. Unscored branches wait for their own score,
+        // while already-scored peers remain eligible so one delayed value cannot stall the tree.
+        let ranked: Vec<_> = Self::ranked_frontier(tree)
+            .into_iter()
+            .filter(|branch| tree.get(*branch).expect("known branch").has_value())
             .collect();
-        if !unscored.is_empty() {
+        if ranked.is_empty() {
             return Ok(Vec::new());
         }
 

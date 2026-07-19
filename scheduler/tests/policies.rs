@@ -222,8 +222,11 @@ fn best_first_expands_the_highest_value_frontier_branch() {
             score: 0.1,
         })
         .unwrap();
-    assert!(scheduler.poll_commands().is_empty());
-    assert_eq!(scheduler.tree().len(), 3);
+    assert!(scheduler.poll_commands().contains(&Command::ForkAt {
+        branch: BranchId(1),
+        width: 2,
+    }));
+    assert_eq!(scheduler.tree().len(), 5);
 
     scheduler
         .feed_event(EngineEvent::TokenSampled {
@@ -330,6 +333,62 @@ fn external_values_gate_best_first_expansion_until_the_score_arrives() {
         ]
     );
     assert_eq!(scheduler.budget().total_consumed(), 1);
+}
+
+#[test]
+fn best_first_skips_unscored_frontier_peers_after_a_score_arrives() {
+    let mut scheduler = Scheduler::with_external_values(scheduler_config(PolicyConfig::BestFirst(
+        BestFirstConfig {
+            expansion_width: 2,
+            max_depth: 2,
+        },
+    )))
+    .unwrap();
+
+    scheduler
+        .feed_event(EngineEvent::TokenSampled {
+            branch: BranchId(0),
+            token: 0,
+            logprob: 0.0,
+        })
+        .unwrap();
+    scheduler
+        .feed_event(EngineEvent::ValueScored {
+            branch: BranchId(0),
+            score: 0.0,
+        })
+        .unwrap();
+    let _ = scheduler.poll_commands();
+
+    scheduler
+        .feed_event(EngineEvent::TokenSampled {
+            branch: BranchId(1),
+            token: 1,
+            logprob: -0.1,
+        })
+        .unwrap();
+    scheduler
+        .feed_event(EngineEvent::ValueScored {
+            branch: BranchId(1),
+            score: 0.8,
+        })
+        .unwrap();
+
+    assert_eq!(
+        scheduler.poll_commands(),
+        vec![
+            Command::ForkAt {
+                branch: BranchId(1),
+                width: 2,
+            },
+            Command::Continue {
+                branch: BranchId(3),
+            },
+            Command::Continue {
+                branch: BranchId(4),
+            },
+        ]
+    );
 }
 
 #[test]
