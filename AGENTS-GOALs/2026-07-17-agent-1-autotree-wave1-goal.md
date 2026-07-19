@@ -182,3 +182,28 @@ Verification on the final implementation:
 
 Remaining gaps: the optional modeling gate was not requested and remained
 skipped in verify-local; no push, remote sync, deployment, or GPU claim was made.
+
+## ENGINE SEMANTICS REGRESSION FIX 2026-07-19 18:16 +03:00
+
+Lane `fix/engine-semantics` commit `72590ce` fixes the real-engine TreeKV
+lifecycle regression without changing default KV capacity or weakening the
+banked logprob, mean-ranking, EOS, SDK-alternative, or stop-scoring semantics.
+The engine now reconciles convergence with scheduler state, excludes expanded
+branches from merge reclamation, drains commands after batch reconciliation,
+and drops stale continuations before decode. The scheduler Python binding
+exposes read-only branch state so engine and scheduler topology stay aligned.
+
+Regression proof: the new real-scheduler dedup lifecycle test failed before the
+fix with `scheduler stopped issuing commands with active branches remaining`
+and passes for beam, best-first, and MCTS after the fix. The seven reported
+serve reproductions pass together (`7 passed`). Final mandatory gates after
+rebuilding/installing the release scheduler wheel and `core[engine]`: serve
+`50 passed` with zero TreeKV skips, core `171 passed, 45 skipped`, SDK
+`21 passed`. Scheduler `cargo fmt --check`, clippy with warnings denied, and
+default cargo tests passed; direct Windows `cargo test --features python`
+still hits host `STATUS_DLL_NOT_FOUND`, while the release wheel import/state
+smoke test and full real-engine serve suite pass.
+
+Review: CodeRabbit CLI was unavailable, so no external review ran. Manual
+full-diff review found no remaining critical or warning issue. No push, remote
+sync, deployment, or GPU claim was made.
