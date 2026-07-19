@@ -22,6 +22,32 @@ class SSEParseError(AutoTreeError):
         self.detail = detail
         super().__init__(f"{violation}: {detail}")
 
+
+class TreeStreamError(AutoTreeError):
+    """A typed terminal error event ended a tree stream before ``done``."""
+
+    def __init__(
+        self,
+        *,
+        code: str,
+        detail: str,
+        error_type: str,
+        param: str | None,
+        retry_after_seconds: int | None,
+    ) -> None:
+        self.code = code
+        self.detail = detail
+        self.error_type = error_type
+        self.param = param
+        self.retry_after_seconds = retry_after_seconds
+        retry = (
+            f"; retry after {retry_after_seconds}s"
+            if retry_after_seconds is not None
+            else ""
+        )
+        super().__init__(f"{code}: {detail}{retry}")
+
+
 class TraceInvariantError(AutoTreeError):
     """A streamed trace violated the tree wire contract."""
 

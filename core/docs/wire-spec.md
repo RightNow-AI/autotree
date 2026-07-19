@@ -3,10 +3,12 @@
 Status: **NORMATIVE** for `autotree-serve`, `autotree-sdk`, and consumers of
 `POST /v1/tree/completions`.
 
-Contract version: **1.0.0**. The `/v1` path identifies this major wire version.
+Contract version: **1.1.0**. The `/v1` path identifies this major wire version.
 Breaking changes require a new major endpoint or an explicitly negotiated wire
 version. Additive response fields may be introduced within v1; clients must not
 infer semantics from fields that are not specified here.
+
+Version 1.1.0 adds the terminal `error` stream event and the `[DONE]` sentinel.
 
 The key words **MUST**, **MUST NOT**, **SHOULD**, and **MAY** are normative.
 
@@ -98,9 +100,9 @@ the concatenation of tokens on the root-to-winner branch path.
 
 With `stream: true`, the response media type is `text/event-stream`. Each event
 contains an SSE `event:` line equal to the JSON payload's `type`, followed by one
-`data:` line containing a single JSON object and a blank line. There is no
-`[DONE]` sentinel. The `done` event is the terminal record and the HTTP stream
-ends immediately after it.
+`data:` line containing a single JSON object and a blank line. The final JSON
+event is followed by `data: [DONE]` and a blank line. Successful streams end with
+`done`; failed streams end with `error`.
 
 ### `branch_started`
 
@@ -141,6 +143,35 @@ ends immediately after it.
 
 - `branch_id`: branch being terminalized.
 - `into_branch_id`: distinct, already-started, still-live merge target.
+
+### `error` (added in v1.1.0)
+
+```json
+{
+  "type": "error",
+  "error": {
+    "message": "Tree-KV capacity is exhausted.",
+    "type": "rate_limit_error",
+    "param": "kv_pages",
+    "code": "kv_capacity_exhausted"
+  },
+  "retry_after_seconds": 1
+}
+```
+
+`error` is the terminal JSON event for a failed stream and occurs instead of
+`done`. Its nested object uses the same `message`, `type`, `param`, and `code`
+fields as an HTTP error body. `retry_after_seconds`, when present, is a
+non-negative integer that tells callers the minimum backoff before retrying.
+Capacity failures MUST use code `kv_capacity_exhausted`, param `kv_pages`, and a
+`retry_after_seconds` value. If capacity exhaustion is known before response
+headers are sent, the server MUST return HTTP 429 with the equivalent
+`Retry-After` header instead of starting an SSE body. Mid-stream failures cannot
+change HTTP headers and therefore communicate backoff in this event.
+
+No branch-completion or usage reconciliation is required after `error`; partial
+branch events are diagnostic only. SDKs MUST parse this event as a typed stream
+failure and MUST NOT report it as an unknown event or a missing `done` event.
 
 ### `done`
 
@@ -213,10 +244,12 @@ token stored.
    parent chain defines the branch's root-to-leaf `branch_path`.
 3. `token_index` MUST start at 0 independently for each branch and increase by
    exactly 1. Tokens MUST NOT arrive after that branch is terminal.
-4. Every started branch MUST receive exactly one terminal event: the winner gets
-   `done`; every other branch gets `branch_pruned` or `branch_merged`.
-5. `done` MUST occur exactly once, MUST be the final event, and the stream MUST
-   not end without it.
+4. On a successful stream, every started branch MUST receive exactly one terminal
+   event: the winner gets `done`; every other branch gets `branch_pruned` or
+   `branch_merged`.
+5. A successful stream MUST contain exactly one `done` as its final JSON event.
+   A failed stream MUST contain exactly one `error` as its final JSON event and
+   MUST NOT contain `done`. Both forms MUST then emit the `[DONE]` sentinel.
 6. `done.text` MUST equal the concatenation of `token` text across the winner's
    complete root-to-winner path. SDK exports MUST use that same lineage rule so
    forked branches retain shared-prefix tokens.

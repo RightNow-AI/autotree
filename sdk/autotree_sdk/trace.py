@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import math
 
-from .errors import TraceInvariantError
+from .errors import TraceInvariantError, TreeStreamError
 from .models import (
     BranchMergedEvent,
     BranchPrunedEvent,
     BranchStartedEvent,
     DoneEvent,
+    ErrorEvent,
     Prompt,
     RolloutBranch,
     RolloutTree,
@@ -53,6 +54,14 @@ class TraceAssembler:
             self._known_live(event.into_branch_id, event.type)
             branch.status = "merged"
             branch.merged_into = event.into_branch_id
+        elif isinstance(event, ErrorEvent):
+            raise TreeStreamError(
+                code=event.error.code,
+                detail=event.error.message,
+                error_type=event.error.type,
+                param=event.error.param,
+                retry_after_seconds=event.retry_after_seconds,
+            )
         elif isinstance(event, DoneEvent):
             self._complete(event)
 

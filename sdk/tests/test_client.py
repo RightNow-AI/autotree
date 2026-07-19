@@ -10,6 +10,7 @@ from autotree_sdk import (
     TraceInvariantError,
     TreeHTTPError,
     TreeParameters,
+    TreeStreamError,
 )
 
 
@@ -92,6 +93,21 @@ def test_stream_missing_done_raises_typed_terminal_error(tree_client) -> None:
                 scenario="missing_done",
             )
         )
+
+
+def test_stream_capacity_error_exposes_typed_backoff(tree_client) -> None:
+    with pytest.raises(TreeStreamError) as exc_info:
+        list(
+            tree_client.stream_tree_completions(
+                messages=[{"role": "user", "content": "question"}],
+                tree=TREE,
+                scenario="capacity_error",
+            )
+        )
+
+    assert exc_info.value.code == "kv_capacity_exhausted"
+    assert exc_info.value.param == "kv_pages"
+    assert exc_info.value.retry_after_seconds == 2
 
 
 def test_stream_usage_mismatch_raises_typed_error(tree_client) -> None:

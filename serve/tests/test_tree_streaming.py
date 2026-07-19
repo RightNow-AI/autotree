@@ -118,6 +118,29 @@ async def test_tree_capacity_error_stream_ends_with_done_sentinel():
     assert response.status_code == 200
     assert "event: error\n" in response.text
     assert response.text.endswith("data: [DONE]\n\n")
+    events = parse_sse(response.text)
+    assert events[0][1]["retry_after_seconds"] == 1
+
+
+async def test_tree_non_stream_capacity_error_has_retry_after_header():
+    app = create_app(engine=CapacityErrorEngine())
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/v1/tree/completions",
+            json={
+                "model": MODEL_ID,
+                "messages": [{"role": "user", "content": "reject this tree"}],
+                "tree": {
+                    "policy": "beam",
+                    "branches": 2,
+                    "budget_tokens": 2,
+                },
+            },
+        )
+
+    assert response.status_code == 429
+    assert response.headers["Retry-After"] == "1"
 
 
 async def test_tree_non_stream_returns_winner_and_summary(http_client):

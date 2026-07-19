@@ -63,6 +63,7 @@ _PLAYGROUND_CSP = (
     "script-src 'unsafe-inline'; connect-src 'self'; "
     "img-src 'self' data:; base-uri 'none'; form-action 'self'"
 )
+_CAPACITY_RETRY_AFTER_SECONDS = 1
 
 
 class EngineContractError(RuntimeError):
@@ -319,6 +320,7 @@ def create_app(
             param="kv_pages",
             error_type="rate_limit_error",
             code="kv_capacity_exhausted",
+            headers={"Retry-After": str(_CAPACITY_RETRY_AFTER_SECONDS)},
         )
 
     @app.middleware("http")
@@ -726,6 +728,7 @@ def _capacity_error_event(error: KVCapacityExceededError) -> dict[str, object]:
     return {
         "type": "error",
         "error": _capacity_error_details(error),
+        "retry_after_seconds": _CAPACITY_RETRY_AFTER_SECONDS,
     }
 
 
@@ -742,7 +745,10 @@ def _chat_capacity_error_chunk(
         choices=[
             {
                 "index": 0,
-                "delta": {"error": _capacity_error_details(error)},
+                "delta": {
+                    "error": _capacity_error_details(error),
+                    "retry_after_seconds": _CAPACITY_RETRY_AFTER_SECONDS,
+                },
                 "finish_reason": "length",
             }
         ],
@@ -765,9 +771,11 @@ def _openai_error(
     param: str | None = None,
     error_type: str = "invalid_request_error",
     code: str | None = None,
+    headers: dict[str, str] | None = None,
 ) -> JSONResponse:
     return JSONResponse(
         status_code=status_code,
+        headers=headers,
         content={
             "error": {
                 "message": message,
