@@ -262,7 +262,7 @@ class TreeKVEngine:
                         "eos": branch_exhausted,
                     }
                 )
-                if self._uses_external_scorer(request):
+                if self._uses_external_scorer(request) and not branch_exhausted:
                     scheduler.feed_event(
                         {
                             "type": "value_scored",

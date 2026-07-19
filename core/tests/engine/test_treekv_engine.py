@@ -480,6 +480,45 @@ def test_eos_token_is_not_forked_after_sampling(tiny_engine_case) -> None:
     assert done.finish_reason == "stop"
 
 
+def test_eos_does_not_send_value_after_scheduler_finalization(
+    tiny_engine_case,
+) -> None:
+    class RejectLateValueScheduler(EosForkScheduler):
+        def feed_event(self, event: dict[str, object]) -> None:
+            if event["type"] == "value_scored":
+                raise AssertionError("value_scored arrived after eos finalization")
+            super().feed_event(event)
+
+    observed_events: list[dict[str, object]] = []
+    expected_id = int(
+        tiny_engine_case.executor.prefill([5, 6, 7, 8]).next_logits(0).argmax().item()
+    )
+    tiny_engine_case.tokenizer.eos_token_id = expected_id
+    engine = TreeKVEngine(
+        model_id="tiny-engine-model",
+        executor=tiny_engine_case.executor,
+        tokenizer=tiny_engine_case.tokenizer,
+        scheduler_factory=lambda config: RejectLateValueScheduler(
+            config, observed_events
+        ),
+    )
+    generation_request = replace(
+        request(),
+        tree=TreeExecution(
+            policy="beam",
+            branches=2,
+            budget_tokens=3,
+            scorer="external",
+        ),
+    )
+
+    events = asyncio.run(collect(engine, generation_request))
+
+    assert [event["type"] for event in observed_events] == ["token_sampled"]
+    done = next(event for event in events if isinstance(event, GenerationDone))
+    assert done.finish_reason == "stop"
+
+
 def test_mid_decode_capacity_exhaustion_is_promoted_to_engine_error(
     tiny_engine_case,
 ) -> None:
