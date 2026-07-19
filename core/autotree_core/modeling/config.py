@@ -36,6 +36,10 @@ class ModelExecutorConfig:
             device = torch.device(self.device)
         except (RuntimeError, TypeError) as error:
             raise ValueError(f"device is invalid: {self.device!r}") from error
+        if device.type == "cuda" and device.index is None and torch.cuda.is_available():
+            # Canonicalize to an indexed device: model tensors report cuda:0,
+            # and torch.device("cuda") != torch.device("cuda:0") in comparisons.
+            device = torch.device("cuda", torch.cuda.current_device())
         object.__setattr__(self, "device", device)
 
 

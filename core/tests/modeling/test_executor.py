@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 import torch
 
 from autotree_core.modeling import ModelExecutorConfig
@@ -13,6 +14,22 @@ def test_default_model_is_gpt2() -> None:
     assert config.model_id == "gpt2"
     assert config.device == torch.device("cpu")
     assert config.dtype is torch.float32
+
+
+def test_cpu_device_is_not_rewritten() -> None:
+    config = ModelExecutorConfig(device="cpu")
+
+    assert config.device == torch.device("cpu")
+    assert config.device.index is None
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_bare_cuda_device_canonicalizes_to_indexed_device() -> None:
+    config = ModelExecutorConfig(device="cuda")
+
+    assert config.device.type == "cuda"
+    assert config.device.index is not None
+    assert config.device == torch.zeros(1, device="cuda").device
 
 
 def test_real_model_prefill_writes_every_layer_to_paged_kv(
