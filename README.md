@@ -50,9 +50,11 @@ spend, and KV reuse. See [the full quickstart](docs/quickstart.md) for the
 captured output and troubleshooting.
 
 With the server running, the live tree playground is at
-`http://127.0.0.1:8000/playground`: paste a prompt and watch branches fork,
-prune, and merge in real time. It is a fully offline page served by
-`autotree-serve` itself.
+`http://127.0.0.1:8000/playground`: paste a prompt and watch branches fork
+and get pruned in real time. (The page also renders merge events, but the
+real TreeKV engine does not emit merges yet - KV dedup exists at the pool
+level and is not yet driven by the engine loop.) It is a fully offline page
+served by `autotree-serve` itself.
 
 ## Packages
 
