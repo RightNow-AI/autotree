@@ -174,6 +174,9 @@ except ModuleNotFoundError as error:
         def generate(self, request: GenerationRequest) -> AsyncIterator[EngineEvent]: ...
 
 
+DETERMINISTIC_MODEL_ID = "deterministic-demo"
+
+
 class DeterministicEngine:
     """Seeded toy generator used for contract tests and CPU-only local serving."""
 
@@ -194,9 +197,12 @@ class DeterministicEngine:
         "verify",
     )
 
-    def __init__(self, model_id: str = "autotree-deterministic") -> None:
+    def __init__(self, model_id: str | None = None) -> None:
+        # Keep accepting the historical argument for callers, but never expose it:
+        # this engine does not load the named weights and must not impersonate them.
+        _ = model_id
         self._metadata = ModelMetadata(
-            id=model_id,
+            id=DETERMINISTIC_MODEL_ID,
             engine="deterministic",
             description=(
                 "Seeded deterministic toy generator for API development; "

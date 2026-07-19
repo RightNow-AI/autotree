@@ -7,7 +7,7 @@ from openai import AsyncOpenAI
 from autotree_serve import create_app
 
 
-MODEL_ID = "autotree-test-model"
+MODEL_ID = "deterministic-demo"
 
 
 @pytest.fixture
