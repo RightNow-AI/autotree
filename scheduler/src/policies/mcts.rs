@@ -144,6 +144,34 @@ impl MctsPolicy {
             }
         }
     }
+
+    fn record_event_value(
+        event: &EngineEvent,
+        tree: &mut BranchTree,
+    ) -> Result<(), SchedulerError> {
+        if event.is_token_sampled() || matches!(event, EngineEvent::ValueScored { .. }) {
+            let branch = event.branch();
+            let node = tree
+                .get(branch)
+                .ok_or(SchedulerError::UnknownBranch(branch))?;
+            if node.has_value() {
+                tree.backpropagate(branch, node.value_estimate())?;
+            }
+        }
+        Ok(())
+    }
+
+    fn select_without_forking(&self, tree: &BranchTree, rng: &mut PolicyRng) -> Option<BranchId> {
+        let mut current = tree.root();
+        loop {
+            let node = tree.get(current)?;
+            match node.state() {
+                BranchState::Active => return Some(current),
+                BranchState::Expanded => current = self.choose_child(tree, current, rng)?,
+                BranchState::Killed | BranchState::Finalized => return None,
+            }
+        }
+    }
 }
 
 impl Policy for MctsPolicy {
@@ -153,18 +181,45 @@ impl Policy for MctsPolicy {
         tree: &mut BranchTree,
         rng: &mut PolicyRng,
     ) -> Result<Vec<Command>, SchedulerError> {
-        if event.is_token_sampled() || matches!(event, EngineEvent::ValueScored { .. }) {
-            let branch = event.branch();
-            let node = tree
-                .get(branch)
-                .ok_or(SchedulerError::UnknownBranch(branch))?;
-            if !node.has_value() {
-                return Ok(Vec::new());
-            }
-            let value = node.value_estimate();
-            tree.backpropagate(branch, value)?;
+        if (event.is_token_sampled() || matches!(event, EngineEvent::ValueScored { .. }))
+            && !tree
+                .get(event.branch())
+                .ok_or(SchedulerError::UnknownBranch(event.branch()))?
+                .has_value()
+        {
+            return Ok(Vec::new());
         }
+        Self::record_event_value(event, tree)?;
         self.select(tree, rng)
+    }
+
+    fn on_event_without_forking(
+        &mut self,
+        event: &EngineEvent,
+        tree: &mut BranchTree,
+        rng: &mut PolicyRng,
+    ) -> Result<Vec<Command>, SchedulerError> {
+        Self::record_event_value(event, tree)?;
+        Ok(self
+            .select_without_forking(tree, rng)
+            .map(|branch| vec![Command::Continue { branch }])
+            .unwrap_or_default())
+    }
+
+    fn on_adaptive_fork(
+        &mut self,
+        event: &EngineEvent,
+        tree: &mut BranchTree,
+        children: &[BranchId],
+        rng: &mut PolicyRng,
+    ) -> Result<Vec<Command>, SchedulerError> {
+        Self::record_event_value(event, tree)?;
+        if children.is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(vec![Command::Continue {
+            branch: children[random_index(rng, children.len())],
+        }])
     }
 }
 

@@ -5,8 +5,9 @@ use pyo3::{
 };
 
 use crate::{
-    BeamConfig, BestFirstConfig, BranchId, Command, DEFAULT_MAX_PENDING_EVENTS, EngineEvent,
-    MctsConfig, PolicyConfig, Scheduler as CoreScheduler, SchedulerConfig, SchedulerError,
+    AdaptiveForkConfig, BeamConfig, BestFirstConfig, BranchId, Command, DEFAULT_MAX_PENDING_EVENTS,
+    EngineEvent, MctsConfig, PolicyConfig, Scheduler as CoreScheduler, SchedulerConfig,
+    SchedulerError,
 };
 
 #[pyclass(name = "Scheduler")]
@@ -48,6 +49,27 @@ impl PyScheduler {
         };
 
         let total_token_budget = optional_u64(config, "budget_tokens", 4_000)?;
+        let adaptive_fork = optional_nullable_f64(config, "adaptive_entropy_threshold")?
+            .map(|entropy_threshold_nats| -> PyResult<_> {
+                Ok(AdaptiveForkConfig {
+                    entropy_threshold_nats,
+                    min_tokens_between_forks: optional_u64(
+                        config,
+                        "adaptive_min_tokens_between_forks",
+                        8,
+                    )?,
+                    max_total_branches: optional_u64(config, "adaptive_max_total_branches", 64)?,
+                    max_depth: optional_u32(config, "adaptive_max_depth", max_depth)?,
+                    min_fork_width: optional_u32(config, "adaptive_min_width", 2)?,
+                    max_fork_width: optional_u32(config, "adaptive_max_width", branches.max(2))?,
+                    entropy_nats_per_extra_branch: optional_f64(
+                        config,
+                        "adaptive_entropy_step",
+                        0.5,
+                    )?,
+                })
+            })
+            .transpose()?;
         let scheduler_config = SchedulerConfig {
             policy,
             seed: optional_u64(config, "seed", 0)?,
@@ -62,15 +84,25 @@ impl PyScheduler {
         let scorer = optional_string(config, "scorer", "logprob")?;
         let max_pending_events =
             optional_u64(config, "max_pending_events", DEFAULT_MAX_PENDING_EVENTS)?;
-        let inner = match scorer.as_str() {
-            "logprob" => CoreScheduler::new(scheduler_config),
-            "external" | "value_head" => {
+        let inner = match (scorer.as_str(), adaptive_fork) {
+            ("logprob", Some(adaptive_fork)) => {
+                CoreScheduler::new_with_adaptive_forking(scheduler_config, adaptive_fork)
+            }
+            ("logprob", None) => CoreScheduler::new(scheduler_config),
+            ("external" | "value_head", Some(adaptive_fork)) => {
+                CoreScheduler::with_external_values_and_adaptive_forking_and_pending_event_budget(
+                    scheduler_config,
+                    adaptive_fork,
+                    max_pending_events,
+                )
+            }
+            ("external" | "value_head", None) => {
                 CoreScheduler::with_external_values_and_pending_event_budget(
                     scheduler_config,
                     max_pending_events,
                 )
             }
-            _ => {
+            (_, _) => {
                 return Err(PyValueError::new_err(
                     "scorer must be 'logprob', 'external', or 'value_head'",
                 ));
@@ -84,11 +116,12 @@ impl PyScheduler {
         let event_type: String = required_item(event, "type")?.extract()?;
         let branch = BranchId(required_item(event, "branch")?.extract()?);
         let parsed = match event_type.as_str() {
-            "token_sampled" => EngineEvent::token_sampled_with_eos(
+            "token_sampled" => EngineEvent::token_sampled_with_metadata(
                 branch,
                 required_item(event, "token")?.extract()?,
                 required_item(event, "logprob")?.extract()?,
                 optional_bool(event, "eos", false)?,
+                optional_nullable_f64(event, "entropy")?,
             ),
             "branch_exhausted" => EngineEvent::BranchExhausted { branch },
             "value_scored" => EngineEvent::ValueScored {
@@ -284,9 +317,7 @@ mod tests {
             config.set_item("policy", "beam").unwrap();
             config.set_item("branches", 4).unwrap();
             config.set_item("fork_at_tokens", vec![99_u64]).unwrap();
-            config
-                .set_item("adaptive_entropy_threshold", 1.5)
-                .unwrap();
+            config.set_item("adaptive_entropy_threshold", 1.5).unwrap();
             config.set_item("adaptive_min_width", 2).unwrap();
             config.set_item("adaptive_max_width", 4).unwrap();
             config.set_item("adaptive_entropy_step", 0.5).unwrap();
@@ -331,7 +362,9 @@ mod tests {
         Python::attach(|py| {
             let config = PyDict::new(py);
             config.set_item("policy", "beam").unwrap();
-            config.set_item("fork_at_tokens", Vec::<u64>::new()).unwrap();
+            config
+                .set_item("fork_at_tokens", Vec::<u64>::new())
+                .unwrap();
             let mut scheduler = PyScheduler::new(&config).unwrap();
 
             let event = PyDict::new(py);

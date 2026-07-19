@@ -1,4 +1,4 @@
-use crate::{BranchTree, Command, EngineEvent, SchedulerError};
+use crate::{BranchId, BranchTree, Command, EngineEvent, SchedulerError};
 
 use crate::policies::{BeamPolicy, BestFirstPolicy, MctsPolicy};
 
@@ -50,4 +50,37 @@ pub trait Policy: Send + Sync {
         tree: &mut BranchTree,
         rng: &mut PolicyRng,
     ) -> Result<Vec<Command>, SchedulerError>;
+
+    /// Selection/pruning path used when an entropy-bearing token delegates all forking to the
+    /// scheduler's adaptive controller. The default safely advances the event branch only.
+    fn on_event_without_forking(
+        &mut self,
+        event: &EngineEvent,
+        tree: &mut BranchTree,
+        _rng: &mut PolicyRng,
+    ) -> Result<Vec<Command>, SchedulerError> {
+        Ok(tree
+            .get(event.branch())
+            .is_some_and(|node| node.state() == crate::BranchState::Active)
+            .then_some(Command::Continue {
+                branch: event.branch(),
+            })
+            .into_iter()
+            .collect())
+    }
+
+    /// Selection/pruning hook after the adaptive controller has forked `children`.
+    fn on_adaptive_fork(
+        &mut self,
+        _event: &EngineEvent,
+        _tree: &mut BranchTree,
+        children: &[BranchId],
+        _rng: &mut PolicyRng,
+    ) -> Result<Vec<Command>, SchedulerError> {
+        Ok(children
+            .iter()
+            .copied()
+            .map(|branch| Command::Continue { branch })
+            .collect())
+    }
 }
