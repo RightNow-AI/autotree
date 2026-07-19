@@ -138,7 +138,7 @@ class TreeKVEngine:
             raise self._capacity_error("admission", error) from error
         scheduler = self._scheduler_factory(self._scheduler_config(request))
         generator = torch.Generator(device=self.executor.config.device).manual_seed(
-            request.seed if request.seed is not None else 0
+            self._resolve_seed(request.seed)
         )
 
         parents: dict[int, int | None] = {execution.root_id: None}
@@ -278,6 +278,7 @@ class TreeKVEngine:
                         token=token,
                         token_index=token_index,
                         logprob=logprob,
+                        token_id=token_id,
                     )
                 )
 
@@ -550,9 +551,15 @@ class TreeKVEngine:
             "max_depth": max(1, request.max_tokens),
             "budget_tokens": tree.budget_tokens if tree else request.max_tokens,
             "per_branch_token_budget": request.max_tokens,
-            "seed": request.seed if request.seed is not None else 0,
+            "seed": cls._resolve_seed(request.seed),
             "scorer": scorer,
         }
+
+    @staticmethod
+    def _resolve_seed(seed: int | None) -> int:
+        """Resolve an omitted/null request seed to the documented default."""
+
+        return 0 if seed is None else seed
 
     @staticmethod
     def _sample(

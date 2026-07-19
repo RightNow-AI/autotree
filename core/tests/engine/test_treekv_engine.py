@@ -265,6 +265,11 @@ def test_sample_reports_unscaled_model_logprob(
     assert logprob == pytest.approx(expected)
 
 
+def test_null_seed_resolves_to_documented_zero_default() -> None:
+    assert TreeKVEngine._resolve_seed(None) == 0
+    assert TreeKVEngine._resolve_seed(17) == 17
+
+
 def test_fork_ids_events_and_kill_reclaim_real_tree_kv_pages(tiny_engine_case) -> None:
     engine = TreeKVEngine(
         model_id="tiny-engine-model",
@@ -293,6 +298,7 @@ def test_fork_ids_events_and_kill_reclaim_real_tree_kv_pages(tiny_engine_case) -
     done = next(event for event in events if isinstance(event, GenerationDone))
     token_events = [event for event in events if isinstance(event, TokenGenerated)]
     assert done.usage.completion_tokens == len(token_events) == 3
+    assert all(event.token_id is not None for event in token_events)
     assert done.tree_summary is not None
     assert done.tree_summary.kv_reuse_ratio > 1.0
     assert set(done.tree_summary.final_scores) == {

@@ -78,8 +78,9 @@ summary, plus `RolloutBranch` records with:
 
 - `branch_id`, `parent_id`, and `branch_path`: stable tree provenance.
 - `tokens` and `completion`: exact streamed text fragments and their joined text.
-- `token_ids`: position-aligned optional IDs. The current wire event has no
-  token ID, so values are `None`; the SDK does not invent IDs by retokenizing.
+- `token_ids`: position-aligned optional model vocabulary IDs. Engines that have
+  the sampled ID emit it directly; values remain `None` only when an engine
+  cannot provide one. The SDK never invents IDs by retokenizing text.
 - `token_indices`: the server-provided positions, preserved independently from
   unavailable tokenizer IDs.
 - `token_logprobs` and `cumulative_logprob`: position-aligned logprobs and their
@@ -94,7 +95,8 @@ meaning:
 - `prompt`: the original string or chat-message list.
 - `completion`: root-to-branch streamed token text, including every shared
   prefix segment before the branch's own tokens.
-- `token_ids`: position-aligned `None` values until the wire carries IDs.
+- `token_ids`: position-aligned model vocabulary IDs, with `None` only for
+  engines that cannot provide the sampled ID.
 - `token_indices`: branch-local server positions for the root-to-branch token
   events, in path order.
 - `token_logprobs`: server logprob for every root-to-branch token event.
@@ -106,8 +108,9 @@ meaning:
 - `pruned` / `prune_reason`: rejection state and server reason.
 - `merged_into`: destination branch ID for a merged branch.
 
-Live-at-`done` branches are included by default; pruned and merged diagnostics
-are opt-in.
+Pruned branches are included by default so GRPO groups retain rejected
+alternatives. Pass `include_pruned=False` to export only live-at-`done`
+branches. Merged diagnostics remain opt-in.
 
 ### RLHF preference records
 

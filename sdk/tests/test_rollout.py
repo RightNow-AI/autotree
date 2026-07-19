@@ -37,22 +37,23 @@ def test_rollout_end_to_end_and_rl_exports() -> None:
     root = batch.trees[0].branch("root")
     alt = batch.trees[0].branch("alt")
     assert root.completion == "answer"
-    assert root.token_ids == [None, None]
+    assert root.token_ids == [101, 102]
     assert root.token_logprobs == [-0.1, -0.2]
     assert root.cumulative_logprob == -0.30000000000000004
     assert alt.branch_path == ["root", "alt"]
     assert alt.pruned is True
 
     grpo = batch.to_grpo_samples()
-    assert len(grpo) == 2
+    assert len(grpo) == 4
     assert grpo[0]["prompt"] == "first"
     assert grpo[0]["completion"] == "answer"
     assert grpo[0]["branch_path"] == ["root"]
     assert grpo[0]["pruned"] is False
+    assert any(sample["pruned"] for sample in grpo)
 
-    diagnostic = batch.to_grpo_samples(include_pruned=True)
-    assert len(diagnostic) == 4
-    assert any(sample["pruned"] for sample in diagnostic)
+    filtered = batch.to_grpo_samples(include_pruned=False)
+    assert len(filtered) == 2
+    assert all(not sample["pruned"] for sample in filtered)
 
     pairs = batch.to_rlhf_pairs()
     assert len(pairs) == 2

@@ -16,7 +16,7 @@ from conftest import MODEL_ID
 
 PLAYGROUND_EVENT_SCHEMA = {
     BranchStarted: {"type", "branch_id", "parent_id"},
-    TokenGenerated: {"type", "branch_id", "token", "token_index"},
+    TokenGenerated: {"type", "branch_id", "token", "token_index", "token_id"},
     BranchPruned: {"type", "branch_id", "reason"},
     BranchMerged: {"type", "branch_id", "into_branch_id"},
     GenerationDone: {
@@ -105,7 +105,10 @@ async def test_playground_sse_contract_matches_event_schema(http_client):
         by_type
     )
     assert all({"type", "branch_id", "parent_id"} <= event.keys() for event in by_type["branch_started"])
-    assert all({"type", "branch_id", "token", "token_index"} <= event.keys() for event in by_type["token"])
+    assert all(
+        {"type", "branch_id", "token", "token_index", "token_id"} <= event.keys()
+        for event in by_type["token"]
+    )
     assert all({"type", "branch_id", "reason"} <= event.keys() for event in by_type["branch_pruned"])
     assert all(
         {"type", "branch_id", "into_branch_id"} <= event.keys()

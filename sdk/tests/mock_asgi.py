@@ -192,10 +192,10 @@ class MockAutoTreeASGI:
             return
         events = [
             {"type": "branch_started", "branch_id": "root", "parent_id": None},
-            {"type": "token", "branch_id": "root", "token_index": 0, "token": "an", "logprob": -0.1},
+            {"type": "token", "branch_id": "root", "token_index": 0, "token": "an", "token_id": 101, "logprob": -0.1},
             {"type": "branch_started", "branch_id": "alt", "parent_id": "root"},
-            {"type": "token", "branch_id": "alt", "token_index": 0, "token": "no", "logprob": -1.0},
-            {"type": "token", "branch_id": "root", "token_index": 1, "token": "swer", "logprob": -0.2},
+            {"type": "token", "branch_id": "alt", "token_index": 0, "token": "no", "token_id": 201, "logprob": -1.0},
+            {"type": "token", "branch_id": "root", "token_index": 1, "token": "swer", "token_id": 102, "logprob": -0.2},
             {"type": "branch_pruned", "branch_id": "alt", "reason": "low_score"},
         ]
         if scenario == "unknown_branch":
