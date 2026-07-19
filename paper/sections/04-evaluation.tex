@@ -1,0 +1,94 @@
+\section{Evaluation Plan and Fixture Illustrations}
+
+\textbf{No model-performance result is reported in this draft.}  The bundled
+ThoughtBench tasks and every plotted value are synthetic contract fixtures.
+They validate the end-to-end reporting path, but they cannot support a claim
+about accuracy, cost, latency, KV reuse, or throughput.  GPU-scale measurements
+and real benchmark traces are pending.
+
+\subsection{Planned protocol}
+
+The planned evaluation compares identical model weights and decoding settings
+under stock serving baselines, sequential best-of-$n$, AutoTree-OFF, and
+\system.  Initial task suites are AIME 2026, GPQA Diamond, and LiveCodeBench,
+followed by broader coding and agentic suites.  Each configuration uses three
+protocol seeds, fixed budgets and sampling parameters, automated graders, and
+downloadable per-sample JSON.  The primary comparisons are iso-accuracy cost and
+iso-budget accuracy; a result is not accepted if model, prompt set, decoding, or
+hardware differs across the compared systems.
+
+For task outcomes $c_{i,j}\in\{0,1\}$, accuracy@$k$ is the fraction of tasks
+with at least one correct answer among the first $k$ samples.  Cost per correct
+answer divides total priced input and output tokens by the number of correct
+samples.  Rollout throughput is normalized as completed rollouts per hour per
+GPU.  KV reuse uses the logical-to-physical multiplier defined in
+Section~2; useful-token ratio remains unavailable unless the endpoint reports
+it explicitly.
+
+\begin{figure*}[t]
+  \centering
+  \includegraphics[width=0.92\textwidth]{01_accuracy_vs_tokens.pdf}
+  \caption{Accuracy-versus-token layout for four planned model slots, comparing
+  sequential execution with AutoTree and showing one-standard-deviation error
+  bars over three synthetic seeds. \fixturewarning Model names label future
+  evaluation slots; no named model produced these values.}
+  \label{fig:scaling}
+\end{figure*}
+
+\begin{figure*}[t]
+  \centering
+  \includegraphics[width=0.92\textwidth]{02_cost_accuracy_pareto.pdf}
+  \caption{Cost-per-correct versus accuracy Pareto layout for vLLM, SGLang, and
+  AutoTree slots, with one-standard-deviation error bars over three synthetic
+  seeds. \fixturewarning The curves are synthetic schema and layout checks, not
+  measured serving results.}
+  \label{fig:pareto}
+\end{figure*}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\columnwidth]{03_kv_reuse_heatmap.pdf}
+  \caption{Depth-by-branching KV-reuse layout, expressed as the
+  logical/physical token multiplier rather than a percentage.
+  \fixturewarning The cells are synthetic and not measured reuse.}
+  \label{fig:reuse}
+\end{figure}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\columnwidth]{05_branching_factor_ablation.pdf}
+  \caption{Branching-factor ablation structure for
+  $k\in\{1,2,4,8,16,32\}$. \fixturewarning The apparent trend is synthetic and
+  must not be interpreted as an optimal branch count.}
+  \label{fig:branching}
+\end{figure}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\columnwidth]{06_rollout_throughput.pdf}
+  \caption{Rollout-throughput comparison slot, normalized per GPU.
+  \fixturewarning Bar heights and error bars are synthetic; no throughput claim
+  follows from this panel.}
+  \label{fig:throughput}
+\end{figure}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\columnwidth]{07_thinking_effort_sweep.pdf}
+  \caption{Thinking-effort sweep structure with AutoTree ON/OFF series.
+  \fixturewarning This is a data slot for a later Inkling evaluation, not an
+  Inkling measurement.}
+  \label{fig:effort}
+\end{figure}
+
+\subsection{Acceptance criteria}
+
+The final evaluation will report all seeds and configs, preserve failed and
+missing cells, and include parity checks across batch sizes.  Accuracy parity
+must be judged with uncertainty rather than a single point estimate.  Cost and
+throughput claims require the same hardware accounting boundary, while reuse
+claims must reconcile with logical and physical token counters.  Figure
+captions will lose the fixture warning only when their complete provenance
+points to released benchmark artifacts.
+
+\FloatBarrier
