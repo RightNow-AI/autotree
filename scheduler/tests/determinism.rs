@@ -1,6 +1,6 @@
 use autotree_scheduler::{
-    BiasedOracleScorer, BranchId, Command, EngineEvent, KillReason, MctsConfig, PolicyConfig,
-    Scheduler, SchedulerConfig, encode_command_stream,
+    BiasedOracleScorer, BranchId, Command, DEFAULT_MAX_TOTAL_BRANCHES, EngineEvent, KillReason,
+    MctsConfig, PolicyConfig, Scheduler, SchedulerConfig, encode_command_stream,
 };
 
 fn scripted_mcts(seed: u64) -> Vec<Command> {
@@ -19,6 +19,7 @@ fn scripted_mcts_steps(seed: u64, steps: u32) -> Vec<Command> {
             seed,
             total_token_budget: 1_000,
             per_branch_token_budget: 1_000,
+            max_total_branches: DEFAULT_MAX_TOTAL_BRANCHES,
             speculative_kill_margin: None,
         },
         Box::new(scorer),

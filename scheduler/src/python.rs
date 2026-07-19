@@ -5,8 +5,9 @@ use pyo3::{
 };
 
 use crate::{
-    BeamConfig, BestFirstConfig, BranchId, Command, DEFAULT_MAX_PENDING_EVENTS, EngineEvent,
-    MctsConfig, PolicyConfig, Scheduler as CoreScheduler, SchedulerConfig, SchedulerError,
+    BeamConfig, BestFirstConfig, BranchId, Command, DEFAULT_MAX_PENDING_EVENTS,
+    DEFAULT_MAX_TOTAL_BRANCHES, EngineEvent, MctsConfig, PolicyConfig, Scheduler as CoreScheduler,
+    SchedulerConfig, SchedulerError,
 };
 
 #[pyclass(name = "Scheduler")]
@@ -56,6 +57,11 @@ impl PyScheduler {
                 config,
                 "per_branch_token_budget",
                 total_token_budget,
+            )?,
+            max_total_branches: optional_u64(
+                config,
+                "max_total_branches",
+                DEFAULT_MAX_TOTAL_BRANCHES,
             )?,
             speculative_kill_margin: optional_nullable_f64(config, "speculative_kill_margin")?,
         };

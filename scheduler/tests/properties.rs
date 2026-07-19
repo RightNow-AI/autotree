@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
 
 use autotree_scheduler::{
-    BeamConfig, BranchId, Command, EngineEvent, PolicyConfig, Scheduler, SchedulerConfig,
+    BeamConfig, BranchId, Command, DEFAULT_MAX_TOTAL_BRANCHES, EngineEvent, PolicyConfig,
+    Scheduler, SchedulerConfig,
 };
 use proptest::prelude::*;
 
@@ -20,6 +21,7 @@ fn beam_config(
         seed: 17,
         total_token_budget: total_budget,
         per_branch_token_budget: branch_budget,
+        max_total_branches: DEFAULT_MAX_TOTAL_BRANCHES,
         speculative_kill_margin: None,
     }
 }

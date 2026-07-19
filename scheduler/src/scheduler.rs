@@ -15,6 +15,8 @@ pub struct SchedulerConfig {
     pub seed: u64,
     pub total_token_budget: u64,
     pub per_branch_token_budget: u64,
+    /// Maximum number of nodes in the monotonic branch arena, including the root.
+    pub max_total_branches: u64,
     pub speculative_kill_margin: Option<f64>,
 }
 
@@ -100,7 +102,7 @@ impl Scheduler {
         let budget =
             BudgetController::new(config.total_token_budget, config.per_branch_token_budget)?;
         Ok(Self {
-            tree: BranchTree::new(),
+            tree: BranchTree::with_max_total_branches(config.max_total_branches)?,
             budget,
             policy,
             scorer,
@@ -628,6 +630,7 @@ mod tests {
             seed: 0,
             total_token_budget: 10,
             per_branch_token_budget: 10,
+            max_total_branches: crate::DEFAULT_MAX_TOTAL_BRANCHES,
             speculative_kill_margin: None,
         })
         .unwrap();

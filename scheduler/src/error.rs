@@ -8,6 +8,7 @@ pub enum SchedulerError {
     UnknownBranch(BranchId),
     BranchNotActive(BranchId),
     BranchHasLiveChildren(BranchId),
+    BranchLimitExceeded { limit: u64, requested_total: u64 },
     InvalidWidth(u32),
     InvalidConfig(&'static str),
     InvalidNumber(&'static str),
@@ -28,6 +29,13 @@ impl fmt::Display for SchedulerError {
             Self::BranchHasLiveChildren(branch) => {
                 write!(formatter, "branch {} still has live children", branch.0)
             }
+            Self::BranchLimitExceeded {
+                limit,
+                requested_total,
+            } => write!(
+                formatter,
+                "fork would grow the branch arena to {requested_total} nodes, above limit {limit}"
+            ),
             Self::InvalidWidth(width) => write!(formatter, "invalid fork width {width}"),
             Self::InvalidConfig(message) => {
                 write!(formatter, "invalid scheduler config: {message}")

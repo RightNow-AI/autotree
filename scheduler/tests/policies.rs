@@ -1,6 +1,7 @@
 use autotree_scheduler::{
-    BeamConfig, BestFirstConfig, BiasedOracleScorer, BranchId, BranchState, Command, EngineEvent,
-    KillReason, MctsConfig, PolicyConfig, Scheduler, SchedulerConfig,
+    BeamConfig, BestFirstConfig, BiasedOracleScorer, BranchId, BranchState, Command,
+    DEFAULT_MAX_TOTAL_BRANCHES, EngineEvent, KillReason, MctsConfig, PolicyConfig, Scheduler,
+    SchedulerConfig,
 };
 
 fn scheduler_config(policy: PolicyConfig) -> SchedulerConfig {
@@ -9,6 +10,7 @@ fn scheduler_config(policy: PolicyConfig) -> SchedulerConfig {
         seed: 0xA11CE,
         total_token_budget: 10_000,
         per_branch_token_budget: 10_000,
+        max_total_branches: DEFAULT_MAX_TOTAL_BRANCHES,
         speculative_kill_margin: None,
     }
 }

@@ -1,7 +1,7 @@
 use autotree_scheduler::{
-    BeamConfig, BestFirstConfig, BranchId, BranchState, BranchTree, Command, EngineEvent,
-    KillReason, LogprobScorer, MctsConfig, Policy, PolicyConfig, PolicyRng, Scheduler,
-    SchedulerConfig, SchedulerError,
+    BeamConfig, BestFirstConfig, BranchId, BranchState, BranchTree, Command,
+    DEFAULT_MAX_TOTAL_BRANCHES, EngineEvent, KillReason, LogprobScorer, MctsConfig, Policy,
+    PolicyConfig, PolicyRng, Scheduler, SchedulerConfig, SchedulerError,
 };
 
 struct FailingPolicy;
@@ -51,6 +51,7 @@ fn config(
         seed: 11,
         total_token_budget,
         per_branch_token_budget,
+        max_total_branches: DEFAULT_MAX_TOTAL_BRANCHES,
         speculative_kill_margin,
     }
 }
@@ -742,6 +743,55 @@ fn eos_reclamation_drops_an_ancestor_pending_score_before_timeout_processing() {
             logprob: -0.1,
         })
         .expect("a stale ancestor score must not wedge a live sibling subtree");
+}
+
+#[test]
+fn total_branch_cap_rejects_a_fork_before_growing_the_arena() {
+    let mut scheduler = Scheduler::new(SchedulerConfig {
+        policy: PolicyConfig::Beam(BeamConfig {
+            width: 4,
+            fork_width: 4,
+            fork_at_tokens: vec![1, 2],
+        }),
+        max_total_branches: 8,
+        ..config(100, 100, None)
+    })
+    .unwrap();
+
+    scheduler
+        .feed_event(EngineEvent::TokenSampled {
+            branch: BranchId(0),
+            token: 0,
+            logprob: 0.0,
+        })
+        .unwrap();
+    let _ = scheduler.poll_commands();
+
+    for branch in [BranchId(1), BranchId(2), BranchId(3)] {
+        scheduler
+            .feed_event(EngineEvent::TokenSampled {
+                branch,
+                token: u32::try_from(branch.0).unwrap(),
+                logprob: 0.0,
+            })
+            .unwrap();
+    }
+    let error = scheduler
+        .feed_event(EngineEvent::TokenSampled {
+            branch: BranchId(4),
+            token: 4,
+            logprob: 0.0,
+        })
+        .unwrap_err();
+
+    assert_eq!(
+        error,
+        SchedulerError::BranchLimitExceeded {
+            limit: 8,
+            requested_total: 9,
+        }
+    );
+    assert_eq!(scheduler.tree().len(), 5);
 }
 
 #[test]
