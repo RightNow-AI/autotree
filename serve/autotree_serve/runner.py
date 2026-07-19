@@ -24,6 +24,9 @@ class EngineRunner:
         self._engine = engine
         self._generation_lock = asyncio.Lock()
         self._accepting = True
+        self._active_generations = 0
+        self._drained = asyncio.Event()
+        self._drained.set()
 
     @property
     def model_metadata(self) -> ModelMetadata:
@@ -36,20 +39,26 @@ class EngineRunner:
     async def generate(self, request: GenerationRequest):
         if not self._accepting:
             raise RuntimeError("engine runner is shutting down")
-        if self.model_metadata.engine != "treekv":
-            async for event in self._engine.generate(request):
-                yield event
-            return
+        self._active_generations += 1
+        self._drained.clear()
+        try:
+            if self.model_metadata.engine != "treekv":
+                async for event in self._engine.generate(request):
+                    yield event
+                return
 
-        async with self._generation_lock:
-            async for event in self._generate_in_worker(request):
-                yield event
+            async with self._generation_lock:
+                async for event in self._generate_in_worker(request):
+                    yield event
+        finally:
+            self._active_generations -= 1
+            if self._active_generations == 0:
+                self._drained.set()
 
     async def shutdown(self) -> None:
-        """Stop admission and wait for admitted real-engine work to finish."""
+        """Stop admission and wait for every admitted generation to finish."""
         self._accepting = False
-        async with self._generation_lock:
-            pass
+        await self._drained.wait()
 
     async def _generate_in_worker(self, request: GenerationRequest):
         loop = asyncio.get_running_loop()
