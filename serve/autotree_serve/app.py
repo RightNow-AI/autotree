@@ -323,7 +323,8 @@ def create_app(
     @app.middleware("http")
     async def count_requests(request: Request, call_next: Any) -> Response:
         response = await call_next(request)
-        endpoint = request.url.path
+        route = request.scope.get("route")
+        endpoint = getattr(route, "path", None) or "unmatched"
         metrics.requests_total.labels(endpoint=endpoint, status=str(response.status_code)).inc()
         return response
 
