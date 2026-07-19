@@ -560,7 +560,9 @@ async def _chat_stream(
                     continue
                 done = event
         except KVCapacityExceededError as error:
-            yield _sse_data(_capacity_error_event(error))
+            yield _sse_data(
+                _chat_capacity_error_chunk(stream_id, created, request.model, error)
+            )
             yield "data: [DONE]\n\n"
             return
         if done is None:
@@ -623,7 +625,9 @@ async def _chat_stream(
                         )
                     )
         except KVCapacityExceededError as error:
-            yield _sse_data(_capacity_error_event(error))
+            yield _sse_data(
+                _chat_capacity_error_chunk(stream_id, created, request.model, error)
+            )
             yield "data: [DONE]\n\n"
             return
         if done is None:
@@ -721,12 +725,36 @@ def _sse_data(payload: dict[str, object]) -> str:
 def _capacity_error_event(error: KVCapacityExceededError) -> dict[str, object]:
     return {
         "type": "error",
-        "error": {
-            "message": str(error),
-            "type": "rate_limit_error",
-            "param": "kv_pages",
-            "code": "kv_capacity_exhausted",
-        },
+        "error": _capacity_error_details(error),
+    }
+
+
+def _chat_capacity_error_chunk(
+    stream_id: str,
+    created: int,
+    model: str,
+    error: KVCapacityExceededError,
+) -> dict[str, object]:
+    return _chat_chunk(
+        stream_id,
+        created,
+        model,
+        choices=[
+            {
+                "index": 0,
+                "delta": {"error": _capacity_error_details(error)},
+                "finish_reason": "length",
+            }
+        ],
+    )
+
+
+def _capacity_error_details(error: KVCapacityExceededError) -> dict[str, object]:
+    return {
+        "message": str(error),
+        "type": "rate_limit_error",
+        "param": "kv_pages",
+        "code": "kv_capacity_exhausted",
     }
 
 
