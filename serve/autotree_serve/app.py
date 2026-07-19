@@ -665,9 +665,11 @@ async def _tree_stream(
             "event: error\n"
             f"data: {json.dumps(payload, separators=(',', ':'))}\n\n"
         )
+        yield "data: [DONE]\n\n"
         return
     if not saw_done:
         raise EngineContractError("engine stream ended without a done event")
+    yield "data: [DONE]\n\n"
 
 
 def _chat_chunk(

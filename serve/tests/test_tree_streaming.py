@@ -3,12 +3,19 @@ from __future__ import annotations
 import json
 import math
 
+import httpx
+
+from autotree_serve import create_app
+from autotree_serve.engine import KVCapacityExceededError, ModelMetadata
+
 from conftest import MODEL_ID
 
 
 def parse_sse(body: str) -> list[tuple[str, dict[str, object]]]:
     events: list[tuple[str, dict[str, object]]] = []
     for frame in body.strip().split("\n\n"):
+        if frame == "data: [DONE]":
+            continue
         lines = frame.splitlines()
         event_type = next(line[7:] for line in lines if line.startswith("event: "))
         data = next(line[6:] for line in lines if line.startswith("data: "))
@@ -35,6 +42,7 @@ async def test_tree_stream_terminal_events_and_usage_accounting(http_client):
     )
 
     assert response.status_code == 200
+    assert response.text.endswith("data: [DONE]\n\n")
     events = parse_sse(response.text)
     event_types = [event_type for event_type, _ in events]
     assert event_types[-1] == "done"
@@ -67,6 +75,49 @@ async def test_tree_stream_terminal_events_and_usage_accounting(http_client):
         done["usage"]["prompt_tokens"] + len(token_events)
     )
     assert sum(done["tree"]["tokens_spent_per_branch"].values()) == len(token_events)
+
+
+class CapacityErrorEngine:
+    model_metadata = ModelMetadata(
+        id=MODEL_ID,
+        engine="deterministic",
+        description="Test engine that rejects generation for capacity.",
+        real_model_weights=False,
+        tree_policies=("beam", "best_first", "mcts"),
+    )
+
+    async def generate(self, _request):
+        if False:
+            yield
+        raise KVCapacityExceededError(
+            phase="admission",
+            required_pages=2,
+            available_pages=1,
+            capacity_pages=1,
+        )
+
+
+async def test_tree_capacity_error_stream_ends_with_done_sentinel():
+    app = create_app(engine=CapacityErrorEngine())
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/v1/tree/completions",
+            json={
+                "model": MODEL_ID,
+                "messages": [{"role": "user", "content": "reject this tree"}],
+                "stream": True,
+                "tree": {
+                    "policy": "beam",
+                    "branches": 2,
+                    "budget_tokens": 2,
+                },
+            },
+        )
+
+    assert response.status_code == 200
+    assert "event: error\n" in response.text
+    assert response.text.endswith("data: [DONE]\n\n")
 
 
 async def test_tree_non_stream_returns_winner_and_summary(http_client):
