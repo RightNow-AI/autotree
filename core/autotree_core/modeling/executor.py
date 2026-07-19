@@ -409,12 +409,6 @@ class ModelExecutor:
     ) -> Any:
         """Run one branch-batched forward through the paged attention seam."""
         model_module = import_module(self.model.__class__.__module__)
-        original_attention = getattr(model_module, "eager_attention_forward", None)
-        if original_attention is None:
-            raise RuntimeError(
-                f"{self.model.__class__.__name__} does not expose an eager attention "
-                "interface that AutoTree can bind to tree_attention_decode"
-            )
 
         def forest_attention(
             module: torch.nn.Module,
@@ -446,6 +440,13 @@ class ModelExecutor:
             return output.unsqueeze(1), None
 
         with _FOREST_FORWARD_LOCK:
+            original_attention = getattr(model_module, "eager_attention_forward", None)
+            if original_attention is None:
+                raise RuntimeError(
+                    f"{self.model.__class__.__name__} does not expose an eager "
+                    "attention interface that AutoTree can bind to "
+                    "tree_attention_decode"
+                )
             original_implementation = self.model.config._attn_implementation
             setattr(model_module, "eager_attention_forward", forest_attention)
             self.model.config._attn_implementation = "eager"

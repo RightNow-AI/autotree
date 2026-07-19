@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from importlib import import_module
 from typing import Any
 
 import torch
@@ -147,6 +148,40 @@ def test_forest_batch_is_bit_identical_to_old_per_branch_decode(
         forest_shorter_k, forest_shorter_v = forest.gather_kv(shorter_id, layer)
         assert torch.equal(forest_shorter_k, shorter_k)
         assert torch.equal(forest_shorter_v, shorter_v)
+
+
+def test_forest_forward_captures_attention_binding_after_lock_acquisition(
+    model_case: ModelCase,
+    monkeypatch,
+) -> None:
+    executor = model_case.executor
+    execution = executor.prefill(model_case.prompt[:5])
+    child_id = executor.fork(execution, execution.root_id)
+    branch_ids = (execution.root_id, child_id)
+    token_ids = tuple(
+        int(torch.argmax(execution.next_logits(branch_id)).item())
+        for branch_id in branch_ids
+    )
+    model_module = import_module(executor.model.__class__.__module__)
+    original_attention = model_module.eager_attention_forward
+
+    def protected_attention(*args, **kwargs):
+        return original_attention(*args, **kwargs)
+
+    class RebindingLock:
+        def __enter__(self):
+            model_module.eager_attention_forward = protected_attention
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+    monkeypatch.setattr(executor_module, "_FOREST_FORWARD_LOCK", RebindingLock())
+    try:
+        executor.decode_batch(execution, branch_ids, token_ids)
+        assert model_module.eager_attention_forward is protected_attention
+    finally:
+        model_module.eager_attention_forward = original_attention
 
 
 def test_greedy_tokens_equal_stock_huggingface_generate(
