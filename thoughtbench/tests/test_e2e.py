@@ -73,7 +73,7 @@ def _config(tmp_path: Path, base_url: str, mode: str) -> RunConfig:
         tree_budget_tokens=12 if mode == "tree" else None,
     )
     return RunConfig(
-        model="autotree-deterministic",
+        model="deterministic-demo",
         base_url=base_url,
         mode=mode,
         task_set=TaskSetConfig(
