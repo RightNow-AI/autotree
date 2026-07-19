@@ -1,5 +1,6 @@
 //! Deterministic branch-policy engine for AutoTree tree-structured decoding.
 
+mod adaptive;
 mod budget;
 mod command;
 mod error;
@@ -11,6 +12,7 @@ mod scheduler;
 mod scorer;
 mod types;
 
+pub use adaptive::AdaptiveForkConfig;
 pub use budget::BudgetController;
 pub use command::{Command, EngineEvent, encode_command_stream};
 pub use error::SchedulerError;

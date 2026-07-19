@@ -18,6 +18,17 @@ pub enum EngineEvent {
         logprob: f64,
         eos: bool,
     },
+    /// Source-compatible metadata extension for `TokenSampled`.
+    ///
+    /// `entropy` is predictive next-token entropy in nats. `None` is normalized back to the
+    /// legacy token variants so callers without the signal retain identical behavior.
+    TokenSampledWithMetadata {
+        branch: BranchId,
+        token: u32,
+        logprob: f64,
+        eos: bool,
+        entropy: Option<f64>,
+    },
     BranchExhausted {
         branch: BranchId,
     },
@@ -52,10 +63,32 @@ impl EngineEvent {
     }
 
     #[must_use]
+    pub const fn token_sampled_with_metadata(
+        branch: BranchId,
+        token: u32,
+        logprob: f64,
+        eos: bool,
+        entropy: Option<f64>,
+    ) -> Self {
+        if entropy.is_some() {
+            Self::TokenSampledWithMetadata {
+                branch,
+                token,
+                logprob,
+                eos,
+                entropy,
+            }
+        } else {
+            Self::token_sampled_with_eos(branch, token, logprob, eos)
+        }
+    }
+
+    #[must_use]
     pub const fn branch(&self) -> BranchId {
         match self {
             Self::TokenSampled { branch, .. }
             | Self::TokenSampledWithEos { branch, .. }
+            | Self::TokenSampledWithMetadata { branch, .. }
             | Self::BranchExhausted { branch }
             | Self::ValueScored { branch, .. } => *branch,
         }
@@ -65,13 +98,30 @@ impl EngineEvent {
     pub const fn is_token_sampled(&self) -> bool {
         matches!(
             self,
-            Self::TokenSampled { .. } | Self::TokenSampledWithEos { .. }
+            Self::TokenSampled { .. }
+                | Self::TokenSampledWithEos { .. }
+                | Self::TokenSampledWithMetadata { .. }
         )
     }
 
     #[must_use]
     pub const fn is_eos(&self) -> bool {
-        matches!(self, Self::TokenSampledWithEos { eos: true, .. })
+        matches!(
+            self,
+            Self::TokenSampledWithEos { eos: true, .. }
+                | Self::TokenSampledWithMetadata { eos: true, .. }
+        )
+    }
+
+    #[must_use]
+    pub const fn entropy(&self) -> Option<f64> {
+        match self {
+            Self::TokenSampledWithMetadata { entropy, .. } => *entropy,
+            Self::TokenSampled { .. }
+            | Self::TokenSampledWithEos { .. }
+            | Self::BranchExhausted { .. }
+            | Self::ValueScored { .. } => None,
+        }
     }
 }
 

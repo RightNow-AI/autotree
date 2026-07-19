@@ -3,8 +3,9 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use rand::SeedableRng;
 
 use crate::{
-    BranchId, BranchState, BranchTree, BudgetController, Command, EngineEvent, KillReason,
-    LogprobScorer, Policy, PolicyConfig, PolicyRng, SchedulerError, ValueScorer,
+    AdaptiveForkConfig, BranchId, BranchState, BranchTree, BudgetController, Command, EngineEvent,
+    KillReason, LogprobScorer, Policy, PolicyConfig, PolicyRng, SchedulerError, ValueScorer,
+    adaptive::AdaptiveForkController,
 };
 
 pub const DEFAULT_MAX_PENDING_EVENTS: u64 = 64;
@@ -40,6 +41,8 @@ pub struct Scheduler {
     accepted_event_count: u64,
     max_pending_events: Option<u64>,
     speculative_kill_margin: Option<f64>,
+    adaptive_fork: Option<AdaptiveForkController>,
+    adaptive_score_pending: BTreeSet<BranchId>,
     rollback_custom_policy_errors: bool,
 }
 
@@ -53,7 +56,34 @@ impl Scheduler {
         scorer: Box<dyn ValueScorer>,
     ) -> Result<Self, SchedulerError> {
         let policy = config.policy.build()?;
-        Self::from_components(config, policy, Some(scorer), None, false)
+        Self::from_components(config, policy, Some(scorer), None, None, false)
+    }
+
+    pub fn new_with_adaptive_forking(
+        config: SchedulerConfig,
+        adaptive_fork: AdaptiveForkConfig,
+    ) -> Result<Self, SchedulerError> {
+        Self::with_scorer_and_adaptive_forking(
+            config,
+            Box::<LogprobScorer>::default(),
+            adaptive_fork,
+        )
+    }
+
+    pub fn with_scorer_and_adaptive_forking(
+        config: SchedulerConfig,
+        scorer: Box<dyn ValueScorer>,
+        adaptive_fork: AdaptiveForkConfig,
+    ) -> Result<Self, SchedulerError> {
+        let policy = config.policy.build()?;
+        Self::from_components(
+            config,
+            policy,
+            Some(scorer),
+            None,
+            Some(adaptive_fork),
+            false,
+        )
     }
 
     /// Builds a scheduler whose engine supplies one `ValueScored` event after each token.
@@ -73,7 +103,39 @@ impl Scheduler {
             ));
         }
         let policy = config.policy.build()?;
-        Self::from_components(config, policy, None, Some(max_pending_events), false)
+        Self::from_components(config, policy, None, Some(max_pending_events), None, false)
+    }
+
+    pub fn with_external_values_and_adaptive_forking(
+        config: SchedulerConfig,
+        adaptive_fork: AdaptiveForkConfig,
+    ) -> Result<Self, SchedulerError> {
+        Self::with_external_values_and_adaptive_forking_and_pending_event_budget(
+            config,
+            adaptive_fork,
+            DEFAULT_MAX_PENDING_EVENTS,
+        )
+    }
+
+    pub fn with_external_values_and_adaptive_forking_and_pending_event_budget(
+        config: SchedulerConfig,
+        adaptive_fork: AdaptiveForkConfig,
+        max_pending_events: u64,
+    ) -> Result<Self, SchedulerError> {
+        if max_pending_events == 0 {
+            return Err(SchedulerError::InvalidConfig(
+                "max_pending_events must be greater than zero",
+            ));
+        }
+        let policy = config.policy.build()?;
+        Self::from_components(
+            config,
+            policy,
+            None,
+            Some(max_pending_events),
+            Some(adaptive_fork),
+            false,
+        )
     }
 
     pub fn with_components(
@@ -81,7 +143,7 @@ impl Scheduler {
         policy: Box<dyn Policy>,
         scorer: Box<dyn ValueScorer>,
     ) -> Result<Self, SchedulerError> {
-        Self::from_components(config, policy, Some(scorer), None, true)
+        Self::from_components(config, policy, Some(scorer), None, None, true)
     }
 
     fn from_components(
@@ -89,6 +151,7 @@ impl Scheduler {
         policy: Box<dyn Policy>,
         scorer: Option<Box<dyn ValueScorer>>,
         max_pending_events: Option<u64>,
+        adaptive_fork: Option<AdaptiveForkConfig>,
         rollback_custom_policy_errors: bool,
     ) -> Result<Self, SchedulerError> {
         if config
@@ -101,6 +164,7 @@ impl Scheduler {
         }
         let budget =
             BudgetController::new(config.total_token_budget, config.per_branch_token_budget)?;
+        let adaptive_fork = adaptive_fork.map(AdaptiveForkController::new).transpose()?;
         Ok(Self {
             tree: BranchTree::with_max_total_branches(config.max_total_branches)?,
             budget,
@@ -114,6 +178,8 @@ impl Scheduler {
             accepted_event_count: 0,
             max_pending_events,
             speculative_kill_margin: config.speculative_kill_margin,
+            adaptive_fork,
+            adaptive_score_pending: BTreeSet::new(),
             rollback_custom_policy_errors,
         })
     }
@@ -139,6 +205,8 @@ impl Scheduler {
         let outstanding_continuations = self.outstanding_continuations.clone();
         let pending_external_values = self.pending_external_values.clone();
         let pending_budget_terminals = self.pending_budget_terminals.clone();
+        let adaptive_fork = self.adaptive_fork.clone();
+        let adaptive_score_pending = self.adaptive_score_pending.clone();
         let accepted_event_count = self.accepted_event_count;
 
         if let Err(error) = self.feed_event_inner(event) {
@@ -149,6 +217,8 @@ impl Scheduler {
             self.outstanding_continuations = outstanding_continuations;
             self.pending_external_values = pending_external_values;
             self.pending_budget_terminals = pending_budget_terminals;
+            self.adaptive_fork = adaptive_fork;
+            self.adaptive_score_pending = adaptive_score_pending;
             self.accepted_event_count = accepted_event_count;
             return Err(error);
         }
@@ -166,6 +236,12 @@ impl Scheduler {
     }
 
     fn process_event(&mut self, event: EngineEvent) -> Result<(), SchedulerError> {
+        if event
+            .entropy()
+            .is_some_and(|entropy| !entropy.is_finite() || entropy < 0.0)
+        {
+            return Err(SchedulerError::InvalidNumber("entropy"));
+        }
         let branch = event.branch();
         let node = self
             .tree
@@ -175,6 +251,7 @@ impl Scheduler {
             EngineEvent::ValueScored { .. } => node.state().is_live(),
             EngineEvent::TokenSampled { .. }
             | EngineEvent::TokenSampledWithEos { .. }
+            | EngineEvent::TokenSampledWithMetadata { .. }
             | EngineEvent::BranchExhausted { .. } => node.state() == BranchState::Active,
         };
         if !accepts_event {
@@ -195,6 +272,9 @@ impl Scheduler {
                 branch, logprob, ..
             }
             | EngineEvent::TokenSampledWithEos {
+                branch, logprob, ..
+            }
+            | EngineEvent::TokenSampledWithMetadata {
                 branch, logprob, ..
             } => {
                 let projected = self.tree.projected_after_token(*branch, *logprob)?;
@@ -220,6 +300,12 @@ impl Scheduler {
                 }
                 self.remove_queued_continue(*branch);
                 let external_score_pending = self.scorer.is_none() && !eos;
+                if external_score_pending
+                    && event.entropy().is_some()
+                    && self.adaptive_fork.is_some()
+                {
+                    self.adaptive_score_pending.insert(*branch);
+                }
                 tree_budget_exhausted = outcome.tree_exhausted && !external_score_pending;
                 if eos {
                     self.tree.finalize(*branch)?;
@@ -242,6 +328,7 @@ impl Scheduler {
                 self.remove_queued_continue(*branch);
                 self.pending_external_values.remove(branch);
                 self.pending_budget_terminals.remove(branch);
+                self.adaptive_score_pending.remove(branch);
                 self.tree.finalize(*branch)?;
                 emitted.push(Command::Finalize { branch: *branch });
                 emitted.extend(self.reclaim_completed_ancestors(*branch)?);
@@ -268,6 +355,7 @@ impl Scheduler {
             emitted.extend(self.terminate_tree(KillReason::TreeBudgetExhausted)?);
             self.pending_external_values.clear();
             self.pending_budget_terminals.clear();
+            self.adaptive_score_pending.clear();
             self.enqueue_commands(emitted);
             return Ok(());
         }
@@ -281,9 +369,12 @@ impl Scheduler {
         emitted.extend(self.speculative_prune()?);
         if self.pending_budget_terminals.is_empty() {
             let tree_before_policy = self.tree.clone();
-            let policy_commands = self
-                .policy
-                .on_event(&event, &mut self.tree, &mut self.rng)?;
+            let adaptive_score_followup = if let EngineEvent::ValueScored { branch, .. } = &event {
+                self.adaptive_score_pending.remove(branch)
+            } else {
+                false
+            };
+            let policy_commands = self.policy_commands(&event, adaptive_score_followup)?;
             self.validate_policy_commands(&tree_before_policy, &policy_commands)?;
             let terminal_branches: Vec<_> = policy_commands
                 .iter()
@@ -313,6 +404,61 @@ impl Scheduler {
                 .get(*branch)
                 .is_some_and(|node| node.state().is_live())
         });
+        self.adaptive_score_pending.retain(|branch| {
+            self.tree
+                .get(*branch)
+                .is_some_and(|node| node.state().is_live())
+        });
+    }
+
+    fn policy_commands(
+        &mut self,
+        event: &EngineEvent,
+        adaptive_score_followup: bool,
+    ) -> Result<Vec<Command>, SchedulerError> {
+        if let (Some(entropy), Some(adaptive)) = (event.entropy(), self.adaptive_fork.as_ref()) {
+            let branch = event.branch();
+            let can_fork = self
+                .tree
+                .get(branch)
+                .is_some_and(|node| node.state() == BranchState::Active);
+            let reserved = u64::try_from(self.outstanding_continuations.len()).unwrap_or(u64::MAX);
+            let width = can_fork
+                .then(|| {
+                    adaptive.planned_width(branch, entropy, &self.tree, &self.budget, reserved)
+                })
+                .transpose()?
+                .flatten();
+            if let Some(width) = width {
+                let parent_tokens_generated = self
+                    .tree
+                    .get(branch)
+                    .ok_or(SchedulerError::UnknownBranch(branch))?
+                    .tokens_generated();
+                let children = self.tree.fork(branch, width)?;
+                self.adaptive_fork
+                    .as_mut()
+                    .expect("adaptive controller was present")
+                    .record_fork(&children, parent_tokens_generated);
+                let mut commands = vec![Command::ForkAt { branch, width }];
+                commands.extend(self.policy.on_adaptive_fork(
+                    event,
+                    &mut self.tree,
+                    &children,
+                    &mut self.rng,
+                )?);
+                return Ok(commands);
+            }
+            return self
+                .policy
+                .on_event_without_forking(event, &mut self.tree, &mut self.rng);
+        }
+        if adaptive_score_followup {
+            return self
+                .policy
+                .on_event_without_forking(event, &mut self.tree, &mut self.rng);
+        }
+        self.policy.on_event(event, &mut self.tree, &mut self.rng)
     }
 
     fn pending_deadline_for_current_event(&self) -> Result<u64, SchedulerError> {
@@ -401,6 +547,7 @@ impl Scheduler {
         self.outstanding_continuations.clear();
         self.pending_external_values.clear();
         self.pending_budget_terminals.clear();
+        self.adaptive_score_pending.clear();
         self.enqueue_commands(commands);
         Ok(())
     }

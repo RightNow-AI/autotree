@@ -44,6 +44,31 @@ impl BeamPolicy {
         });
         frontier
     }
+
+    fn prune_and_continue(&self, tree: &mut BranchTree) -> Result<Vec<Command>, SchedulerError> {
+        let ranked = Self::ranked_frontier(tree);
+        let mut commands = Vec::new();
+        let mut victims: Vec<_> = ranked.iter().copied().skip(self.width).collect();
+        victims.sort_unstable();
+        for victim in victims {
+            tree.kill(victim, KillReason::BeamPruned)?;
+            commands.push(Command::Kill {
+                branch: victim,
+                reason: KillReason::BeamPruned,
+            });
+        }
+
+        let ranked = Self::ranked_frontier(tree);
+        let minimum_tokens = ranked
+            .iter()
+            .filter_map(|branch| tree.get(*branch).map(crate::BranchNode::tokens_generated))
+            .min();
+        commands.extend(ranked.into_iter().filter_map(|branch| {
+            (tree.get(branch)?.tokens_generated() == minimum_tokens?)
+                .then_some(Command::Continue { branch })
+        }));
+        Ok(commands)
+    }
 }
 
 impl Policy for BeamPolicy {
@@ -54,7 +79,6 @@ impl Policy for BeamPolicy {
         _rng: &mut PolicyRng,
     ) -> Result<Vec<Command>, SchedulerError> {
         let mut commands = Vec::new();
-        let mut forked = false;
         if event.is_token_sampled() {
             let frontier = tree.active_frontier();
             let common_tokens = frontier.first().and_then(|first| {
@@ -75,32 +99,29 @@ impl Policy for BeamPolicy {
                         width: self.fork_width,
                     });
                 }
-                forked = true;
             }
         }
 
-        if forked {
-            let ranked = Self::ranked_frontier(tree);
-            let mut victims: Vec<_> = ranked.iter().copied().skip(self.width).collect();
-            victims.sort_unstable();
-            for victim in victims {
-                tree.kill(victim, KillReason::BeamPruned)?;
-                commands.push(Command::Kill {
-                    branch: victim,
-                    reason: KillReason::BeamPruned,
-                });
-            }
-        }
-
-        let ranked = Self::ranked_frontier(tree);
-        let minimum_tokens = ranked
-            .iter()
-            .filter_map(|branch| tree.get(*branch).map(crate::BranchNode::tokens_generated))
-            .min();
-        commands.extend(ranked.into_iter().filter_map(|branch| {
-            (tree.get(branch)?.tokens_generated() == minimum_tokens?)
-                .then_some(Command::Continue { branch })
-        }));
+        commands.extend(self.prune_and_continue(tree)?);
         Ok(commands)
+    }
+
+    fn on_event_without_forking(
+        &mut self,
+        _event: &EngineEvent,
+        tree: &mut BranchTree,
+        _rng: &mut PolicyRng,
+    ) -> Result<Vec<Command>, SchedulerError> {
+        self.prune_and_continue(tree)
+    }
+
+    fn on_adaptive_fork(
+        &mut self,
+        _event: &EngineEvent,
+        tree: &mut BranchTree,
+        _children: &[BranchId],
+        _rng: &mut PolicyRng,
+    ) -> Result<Vec<Command>, SchedulerError> {
+        self.prune_and_continue(tree)
     }
 }

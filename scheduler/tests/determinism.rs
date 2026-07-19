@@ -1,6 +1,7 @@
 use autotree_scheduler::{
-    BiasedOracleScorer, BranchId, Command, DEFAULT_MAX_TOTAL_BRANCHES, EngineEvent, KillReason,
-    MctsConfig, PolicyConfig, Scheduler, SchedulerConfig, encode_command_stream,
+    AdaptiveForkConfig, BeamConfig, BiasedOracleScorer, BranchId, Command,
+    DEFAULT_MAX_TOTAL_BRANCHES, EngineEvent, KillReason, MctsConfig, PolicyConfig, Scheduler,
+    SchedulerConfig, encode_command_stream,
 };
 
 fn scripted_mcts(seed: u64) -> Vec<Command> {
@@ -209,5 +210,89 @@ fn command_stream_encoding_has_stable_golden_tags_and_little_endian_fields() {
         encode_command_stream(&[Command::Finalize {
             branch: BranchId(1)
         }])
+    );
+}
+
+#[test]
+fn entropy_bearing_script_matches_the_adaptive_golden_stream() {
+    let mut scheduler = Scheduler::new_with_adaptive_forking(
+        SchedulerConfig {
+            policy: PolicyConfig::Beam(BeamConfig {
+                width: 1,
+                fork_width: 2,
+                fork_at_tokens: Vec::new(),
+            }),
+            seed: 0x0E17_E0F1,
+            total_token_budget: 100,
+            per_branch_token_budget: 100,
+            speculative_kill_margin: None,
+            max_total_branches: DEFAULT_MAX_TOTAL_BRANCHES,
+        },
+        AdaptiveForkConfig {
+            entropy_threshold_nats: 1.0,
+            min_tokens_between_forks: 2,
+            max_total_branches: 16,
+            max_depth: 4,
+            min_fork_width: 2,
+            max_fork_width: 2,
+            entropy_nats_per_extra_branch: 1.0,
+        },
+    )
+    .unwrap();
+
+    let scripted = [
+        (BranchId(0), 0, 0.5),
+        (BranchId(0), 1, 1.2),
+        (BranchId(1), 2, 2.0),
+        (BranchId(1), 3, 2.0),
+    ];
+    let mut stream = Vec::new();
+    for (branch, token, entropy) in scripted {
+        scheduler
+            .feed_event(EngineEvent::token_sampled_with_metadata(
+                branch,
+                token,
+                -0.1,
+                false,
+                Some(entropy),
+            ))
+            .unwrap();
+        stream.extend(scheduler.poll_commands());
+    }
+
+    let expected = vec![
+        Command::Continue {
+            branch: BranchId(0),
+        },
+        Command::ForkAt {
+            branch: BranchId(0),
+            width: 2,
+        },
+        Command::Kill {
+            branch: BranchId(2),
+            reason: KillReason::BeamPruned,
+        },
+        Command::Continue {
+            branch: BranchId(1),
+        },
+        Command::Continue {
+            branch: BranchId(1),
+        },
+        Command::ForkAt {
+            branch: BranchId(1),
+            width: 2,
+        },
+        Command::Kill {
+            branch: BranchId(4),
+            reason: KillReason::BeamPruned,
+        },
+        Command::Continue {
+            branch: BranchId(3),
+        },
+    ];
+    assert_eq!(stream, expected);
+    assert_eq!(
+        encode_command_stream(&stream),
+        encode_command_stream(&expected)
     );
 }

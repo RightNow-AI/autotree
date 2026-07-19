@@ -43,6 +43,18 @@ impl BestFirstPolicy {
         });
         frontier
     }
+
+    fn select_without_forking(tree: &BranchTree) -> Vec<Command> {
+        let ranked = Self::ranked_frontier(tree);
+        if ranked.is_empty()
+            || ranked
+                .iter()
+                .any(|branch| !tree.get(*branch).expect("known branch").has_value())
+        {
+            return Vec::new();
+        }
+        vec![Command::Continue { branch: ranked[0] }]
+    }
 }
 
 fn normalize_signed_zero(value: f64) -> f64 {
@@ -83,5 +95,28 @@ impl Policy for BestFirstPolicy {
                 .map(|branch| Command::Continue { branch }),
         );
         Ok(commands)
+    }
+
+    fn on_event_without_forking(
+        &mut self,
+        _event: &EngineEvent,
+        tree: &mut BranchTree,
+        _rng: &mut PolicyRng,
+    ) -> Result<Vec<Command>, SchedulerError> {
+        Ok(Self::select_without_forking(tree))
+    }
+
+    fn on_adaptive_fork(
+        &mut self,
+        _event: &EngineEvent,
+        _tree: &mut BranchTree,
+        children: &[BranchId],
+        _rng: &mut PolicyRng,
+    ) -> Result<Vec<Command>, SchedulerError> {
+        Ok(children
+            .iter()
+            .copied()
+            .map(|branch| Command::Continue { branch })
+            .collect())
     }
 }
