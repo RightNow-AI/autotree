@@ -52,18 +52,41 @@ class ServeMetrics:
             "All tokens generated across branches.",
             registry=self.registry,
         )
+        self.branch_events_total = Counter(
+            "branch_events_total",
+            "Branch lifecycle events emitted by serving engines.",
+            ("event",),
+            registry=self.registry,
+        )
+        self.capacity_rejections_total = Counter(
+            "capacity_rejections_total",
+            "Requests or streams rejected because Tree-KV capacity was exhausted.",
+            registry=self.registry,
+        )
+        self.quota_rejections_total = Counter(
+            "quota_rejections_total",
+            "Requests rejected by per-tenant generated-token quotas.",
+            registry=self.registry,
+        )
 
     def observe_event(self, event: EngineEvent) -> None:
         if isinstance(event, BranchStarted):
             self.active_branches.inc()
+            self.branch_events_total.labels(event="started").inc()
             return
-        if isinstance(event, (BranchPruned, BranchMerged)):
+        if isinstance(event, BranchPruned):
             self.active_branches.dec()
+            self.branch_events_total.labels(event="pruned").inc()
+            return
+        if isinstance(event, BranchMerged):
+            self.active_branches.dec()
+            self.branch_events_total.labels(event="merged").inc()
             return
         if not isinstance(event, GenerationDone):
             return
 
         self.active_branches.dec()
+        self.branch_events_total.labels(event="completed").inc()
         counters = event.counters
         kv_ratio = counters.logical_tokens / max(counters.physical_tokens, 1)
         useful_ratio = counters.useful_tokens / max(event.usage.completion_tokens, 1)

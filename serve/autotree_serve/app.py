@@ -31,6 +31,7 @@ from .engine import (
     TokenGenerated,
     TreeExecution,
 )
+from .enterprise import EnterpriseConfig, EnterpriseMiddleware
 from .metrics import ServeMetrics
 from .runner import EngineRunner
 from .schema import ChatCompletionRequest, TreeCompletionRequest
@@ -266,10 +267,12 @@ def create_app(
     *,
     model_id: str = "autotree-deterministic",
     registry: CollectorRegistry | None = None,
+    enterprise_config: EnterpriseConfig | None = None,
 ) -> FastAPI:
     selected_engine = engine or DeterministicEngine(model_id=model_id)
     engine_runner = EngineRunner(selected_engine)
     metrics = ServeMetrics(registry)
+    enterprise = enterprise_config or EnterpriseConfig.from_env()
     started_at = time.monotonic()
 
     @asynccontextmanager
@@ -281,6 +284,8 @@ def create_app(
     app.state.engine = selected_engine
     app.state.engine_runner = engine_runner
     app.state.metrics = metrics
+    app.state.enterprise_config = enterprise
+    app.add_middleware(EnterpriseMiddleware, config=enterprise, metrics=metrics)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error_handler(
@@ -314,6 +319,7 @@ def create_app(
         _request: Request,
         exc: KVCapacityExceededError,
     ) -> JSONResponse:
+        metrics.capacity_rejections_total.inc()
         return _openai_error(
             status_code=429,
             message=str(exc),
@@ -371,7 +377,10 @@ def create_app(
         )
 
     @app.post("/v1/chat/completions")
-    async def chat_completions(body: ChatCompletionRequest) -> Response:
+    async def chat_completions(
+        http_request: Request,
+        body: ChatCompletionRequest,
+    ) -> Response:
         feature_error = _validate_supported_features(body)
         if feature_error:
             return feature_error
@@ -385,6 +394,7 @@ def create_app(
                     engine_runner,
                     request,
                     metrics,
+                    request_scope=http_request.scope,
                     include_usage=(
                         body.stream_options.include_usage
                         if body.stream_options is not None
@@ -394,11 +404,19 @@ def create_app(
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
-        _events, done = await _collect_events(engine_runner, request, metrics)
+        _events, done = await _collect_events(
+            engine_runner,
+            request,
+            metrics,
+            request_scope=http_request.scope,
+        )
         return JSONResponse(_completion_response(done, body.model))
 
     @app.post("/v1/tree/completions")
-    async def tree_completions(body: TreeCompletionRequest) -> Response:
+    async def tree_completions(
+        http_request: Request,
+        body: TreeCompletionRequest,
+    ) -> Response:
         feature_error = _validate_supported_features(body)
         if feature_error:
             return feature_error
@@ -408,11 +426,21 @@ def create_app(
         request = _to_engine_request(body)
         if body.stream:
             return StreamingResponse(
-                _tree_stream(engine_runner, request, metrics),
+                _tree_stream(
+                    engine_runner,
+                    request,
+                    metrics,
+                    request_scope=http_request.scope,
+                ),
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
-        _events, done = await _collect_events(engine_runner, request, metrics)
+        _events, done = await _collect_events(
+            engine_runner,
+            request,
+            metrics,
+            request_scope=http_request.scope,
+        )
         return JSONResponse(_completion_response(done, body.model))
 
     @app.get("/metrics")
@@ -485,6 +513,8 @@ async def _collect_events(
     engine: EngineProtocol,
     request: GenerationRequest,
     metrics: ServeMetrics,
+    *,
+    request_scope: dict[str, Any] | None = None,
 ) -> tuple[list[EngineEvent], GenerationDone]:
     accumulator = EventAccumulator()
     events: list[EngineEvent] = []
@@ -492,6 +522,8 @@ async def _collect_events(
     async for event in engine.generate(request):
         accumulator.accept(event)
         metrics.observe_event(event)
+        if isinstance(event, TokenGenerated) and request_scope is not None:
+            request_scope["autotree.audit_tokens"] = accumulator.token_count
         events.append(event)
         if isinstance(event, GenerationDone):
             done = event
@@ -530,6 +562,7 @@ async def _chat_stream(
     metrics: ServeMetrics,
     *,
     include_usage: bool,
+    request_scope: dict[str, Any] | None = None,
 ) -> AsyncIterator[str]:
     stream_id = f"chatcmpl-{uuid.uuid4().hex}"
     created = int(time.time())
@@ -549,6 +582,8 @@ async def _chat_stream(
             async for event in engine.generate(request):
                 accumulator.accept(event)
                 metrics.observe_event(event)
+                if isinstance(event, TokenGenerated) and request_scope is not None:
+                    request_scope["autotree.audit_tokens"] = accumulator.token_count
                 if not isinstance(event, GenerationDone):
                     yield _sse_data(
                         _chat_chunk(
@@ -562,6 +597,7 @@ async def _chat_stream(
                     continue
                 done = event
         except KVCapacityExceededError as error:
+            metrics.capacity_rejections_total.inc()
             yield _sse_data(
                 _chat_capacity_error_chunk(stream_id, created, request.model, error)
             )
@@ -595,6 +631,8 @@ async def _chat_stream(
             async for event in engine.generate(request):
                 accumulator.accept(event)
                 metrics.observe_event(event)
+                if isinstance(event, TokenGenerated) and request_scope is not None:
+                    request_scope["autotree.audit_tokens"] = accumulator.token_count
                 if isinstance(event, TokenGenerated):
                     yield _sse_data(
                         _chat_chunk(
@@ -627,6 +665,7 @@ async def _chat_stream(
                         )
                     )
         except KVCapacityExceededError as error:
+            metrics.capacity_rejections_total.inc()
             yield _sse_data(
                 _chat_capacity_error_chunk(stream_id, created, request.model, error)
             )
@@ -652,6 +691,8 @@ async def _tree_stream(
     engine: EngineProtocol,
     request: GenerationRequest,
     metrics: ServeMetrics,
+    *,
+    request_scope: dict[str, Any] | None = None,
 ) -> AsyncIterator[str]:
     accumulator = EventAccumulator()
     saw_done = False
@@ -659,6 +700,8 @@ async def _tree_stream(
         async for event in engine.generate(request):
             accumulator.accept(event)
             metrics.observe_event(event)
+            if isinstance(event, TokenGenerated) and request_scope is not None:
+                request_scope["autotree.audit_tokens"] = accumulator.token_count
             saw_done = saw_done or isinstance(event, GenerationDone)
             payload = _event_payload(event)
             yield (
@@ -666,6 +709,7 @@ async def _tree_stream(
                 f"data: {json.dumps(payload, separators=(',', ':'))}\n\n"
             )
     except KVCapacityExceededError as error:
+        metrics.capacity_rejections_total.inc()
         payload = _capacity_error_event(error)
         yield (
             "event: error\n"

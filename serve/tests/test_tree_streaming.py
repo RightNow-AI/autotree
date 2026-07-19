@@ -138,9 +138,11 @@ async def test_tree_non_stream_capacity_error_has_retry_after_header():
                 },
             },
         )
+        scrape = await client.get("/metrics")
 
     assert response.status_code == 429
     assert response.headers["Retry-After"] == "1"
+    assert "capacity_rejections_total 1.0" in scrape.text
 
 
 async def test_tree_non_stream_returns_winner_and_summary(http_client):
