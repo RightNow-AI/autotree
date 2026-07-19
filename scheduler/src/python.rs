@@ -5,9 +5,9 @@ use pyo3::{
 };
 
 use crate::{
-    AdaptiveForkConfig, BeamConfig, BestFirstConfig, BranchId, Command, DEFAULT_MAX_PENDING_EVENTS,
-    DEFAULT_MAX_TOTAL_BRANCHES, EngineEvent, MctsConfig, PolicyConfig, Scheduler as CoreScheduler,
-    SchedulerConfig, SchedulerError,
+    AdaptiveForkConfig, BeamConfig, BestFirstConfig, BranchId, BranchState, Command,
+    DEFAULT_MAX_PENDING_EVENTS, DEFAULT_MAX_TOTAL_BRANCHES, EngineEvent, MctsConfig, PolicyConfig,
+    Scheduler as CoreScheduler, SchedulerConfig, SchedulerError,
 };
 
 #[pyclass(name = "Scheduler")]
@@ -173,6 +173,18 @@ impl PyScheduler {
         })
     }
 
+    fn branch_state(&self, branch: u64) -> Option<&'static str> {
+        self.inner
+            .tree()
+            .get(BranchId(branch))
+            .map(|node| match node.state() {
+                BranchState::Active => "active",
+                BranchState::Expanded => "expanded",
+                BranchState::Killed => "killed",
+                BranchState::Finalized => "finalized",
+            })
+    }
+
     fn drain(&mut self) -> PyResult<()> {
         self.inner.drain().map_err(to_python_error)
     }
@@ -255,6 +267,7 @@ mod tests {
             config.set_item("fork_at_tokens", vec![1_u64]).unwrap();
             config.set_item("budget_tokens", 100).unwrap();
             let mut scheduler = PyScheduler::new(&config).unwrap();
+            assert_eq!(scheduler.branch_state(0), Some("active"));
 
             let event = PyDict::new(py);
             event.set_item("type", "token_sampled").unwrap();
@@ -262,6 +275,7 @@ mod tests {
             event.set_item("token", 7).unwrap();
             event.set_item("logprob", -0.1).unwrap();
             scheduler.feed_event(&event).unwrap();
+            assert_eq!(scheduler.branch_state(0), Some("expanded"));
             assert_eq!(scheduler.poll_commands(py).unwrap().bind(py).len(), 3);
 
             scheduler.drain().unwrap();

@@ -113,6 +113,7 @@ class TokenEvent(TreeEventModel):
     branch_id: str
     token_index: int = Field(ge=0)
     token: str
+    token_id: NonNegativeInt | None = None
     logprob: float
 
 
@@ -296,14 +297,15 @@ class RolloutBatch:
     trees: list[RolloutTree]
 
     def to_grpo_samples(
-        self, *, include_pruned: bool = False, include_merged: bool = False
+        self, *, include_pruned: bool = True, include_merged: bool = False
     ) -> list[dict[str, Any]]:
         """Export flat prompt/completion samples for grouped-policy training.
 
         Each record retains the original prompt (text or chat messages), token
         logprobs, cumulative logprob, root-to-branch path, and pruning metadata.
-        ``prompt_index`` is the group key. By default only live-at-done branches
-        are emitted; diagnostic pruned/merged traces are opt-in.
+        ``prompt_index`` is the group key. Pruned branches are included by
+        default so group-relative exports retain rejected alternatives; merged
+        traces remain opt-in because they do not own an independent completion.
         """
 
         samples: list[dict[str, Any]] = []

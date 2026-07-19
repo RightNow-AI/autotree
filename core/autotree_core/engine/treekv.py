@@ -36,6 +36,8 @@ class SchedulerBinding(Protocol):
 
     def poll_commands(self) -> list[dict[str, object]]: ...
 
+    def branch_state(self, branch: int) -> str | None: ...
+
 
 SchedulerFactory = Callable[[dict[str, object]], SchedulerBinding]
 
@@ -138,13 +140,14 @@ class TreeKVEngine:
             raise self._capacity_error("admission", error) from error
         scheduler = self._scheduler_factory(self._scheduler_config(request))
         generator = torch.Generator(device=self.executor.config.device).manual_seed(
-            request.seed if request.seed is not None else 0
+            self._resolve_seed(request.seed)
         )
 
         parents: dict[int, int | None] = {execution.root_id: None}
         own_text: dict[int, list[str]] = {execution.root_id: []}
         path_text: dict[int, str] = {execution.root_id: ""}
         token_counts: dict[int, int] = {execution.root_id: 0}
+        ranking_token_counts: dict[int, int] = {execution.root_id: 0}
         scores: dict[int, float] = {execution.root_id: 0.0}
         active = {execution.root_id}
         finalized: set[int] = set()
@@ -163,10 +166,42 @@ class TreeKVEngine:
 
         yield BranchStarted(branch_id="branch-0", parent_id=None)
 
-        def merge_converged_branches() -> tuple[BranchMerged, ...]:
+        def scheduler_branch_state(branch_id: int) -> str | None:
+            checker = getattr(scheduler, "branch_state", None)
+            return None if checker is None else checker(branch_id)
+
+        def scheduler_branch_is_active(branch_id: int) -> bool:
+            state = scheduler_branch_state(branch_id)
+            return state is None or state == "active"
+
+        def merge_converged_branches(
+            pending_commands: tuple[dict[str, object], ...],
+        ) -> tuple[BranchMerged, ...]:
             nonlocal merged_count
+            scheduler_terminal = {
+                int(command["branch"])
+                for command in pending_commands
+                if str(command.get("type")) in {"kill", "finalize"}
+            }
+            scheduler_terminal.update(
+                branch_id
+                for branch_id in active
+                if scheduler_branch_state(branch_id) in {"killed", "finalized"}
+            )
+            scheduler_expanding = {
+                int(command["branch"])
+                for command in pending_commands
+                if str(command.get("type")) == "fork_at"
+            }
+            scheduler_expanding.update(
+                branch_id
+                for branch_id in active
+                if scheduler_branch_state(branch_id) == "expanded"
+            )
             groups: dict[tuple[tuple[int, ...], int], list[int]] = {}
             for branch_id in sorted(active):
+                if branch_id in exhaustion_pending or branch_id in scheduler_expanding:
+                    continue
                 branch = execution.tree.get_branch(branch_id)
                 if (
                     not branch.block_table
@@ -180,10 +215,20 @@ class TreeKVEngine:
             for branch_ids in groups.values():
                 if len(branch_ids) < 2:
                     continue
-                target = min(branch_ids)
+                target = min(
+                    branch_ids,
+                    key=lambda branch_id: (
+                        branch_id in scheduler_terminal,
+                        branch_id,
+                    ),
+                )
                 for branch_id in sorted(branch_ids):
                     if branch_id == target:
                         continue
+                    if branch_id not in scheduler_terminal:
+                        scheduler.feed_event(
+                            {"type": "branch_exhausted", "branch": branch_id}
+                        )
                     active.remove(branch_id)
                     exhaustion_pending.discard(branch_id)
                     self.executor.prune(execution, branch_id)
@@ -238,11 +283,15 @@ class TreeKVEngine:
                 )
                 token_index = token_counts[branch_id]
                 token_counts[branch_id] += 1
+                ranking_token_counts[branch_id] += 1
                 own_text[branch_id].append(token)
                 path_text[branch_id] += token
                 scores[branch_id] += logprob
                 completion_tokens += 1
-                if self._token_exhausts_branch(token_id, path_text[branch_id], request):
+                branch_exhausted = self._token_exhausts_branch(
+                    token_id, path_text[branch_id], request
+                )
+                if branch_exhausted:
                     exhaustion_pending.add(branch_id)
                     stopped.add(branch_id)
                 if first_token_at is None:
@@ -254,24 +303,25 @@ class TreeKVEngine:
                         "branch": branch_id,
                         "token": token_id,
                         "logprob": logprob,
+                        "eos": branch_exhausted,
                     }
                 )
-                if self._uses_external_scorer(request):
+                if self._uses_external_scorer(request) and not branch_exhausted:
                     scheduler.feed_event(
                         {
                             "type": "value_scored",
                             "branch": branch_id,
                             "score": scores[branch_id]
-                            / max(token_counts[branch_id], 1),
+                            / max(ranking_token_counts[branch_id], 1),
                         }
                     )
-                commands.extend(scheduler.poll_commands())
                 events.append(
                     TokenGenerated(
                         branch_id=self._branch_name(branch_id),
                         token=token,
                         token_index=token_index,
                         logprob=logprob,
+                        token_id=token_id,
                     )
                 )
 
@@ -280,6 +330,7 @@ class TreeKVEngine:
             unique_tokens_per_step.append(
                 len({execution.token_ids(branch_id) for branch_id in branch_ids})
             )
+            scheduler_commands = tuple(scheduler.poll_commands())
             merge_events: tuple[BranchMerged, ...] = ()
             if (
                 self._dedup_every_steps is not None
@@ -289,7 +340,9 @@ class TreeKVEngine:
                 best_snapshot = self._better_snapshot(
                     best_snapshot, self._snapshot(execution)
                 )
-                merge_events = merge_converged_branches()
+                merge_events = merge_converged_branches(scheduler_commands)
+            commands.extend(scheduler_commands)
+            commands.extend(scheduler.poll_commands())
             best_snapshot = self._better_snapshot(
                 best_snapshot, self._snapshot(execution)
             )
@@ -312,7 +365,9 @@ class TreeKVEngine:
                     continue_ids.append(int(commands.popleft()["branch"]))
                 ready: list[int] = []
                 for continued_id in continue_ids:
-                    if continued_id in merged:
+                    if continued_id in merged or continued_id not in active:
+                        continue
+                    if not scheduler_branch_is_active(continued_id):
                         continue
                     if continued_id in exhaustion_pending:
                         exhaustion_pending.remove(continued_id)
@@ -346,6 +401,7 @@ class TreeKVEngine:
                     own_text[child_id] = []
                     path_text[child_id] = path_text[branch_id]
                     token_counts[child_id] = 0
+                    ranking_token_counts[child_id] = ranking_token_counts[branch_id]
                     scores[child_id] = scores[branch_id]
                     active.add(child_id)
                     if children_are_exhausted:
@@ -387,7 +443,12 @@ class TreeKVEngine:
         if not finalized:
             raise RuntimeError("scheduler terminated without a finalized branch")
 
-        winner = max(finalized, key=lambda branch: (scores[branch], -branch))
+        ranking_scores = {
+            branch_id: scores[branch_id]
+            / max(ranking_token_counts[branch_id], 1)
+            for branch_id in parents
+        }
+        winner = max(finalized, key=lambda branch: (ranking_scores[branch], -branch))
         for branch_id in sorted(finalized - {winner}):
             pruned_count += 1
             yield BranchPruned(
@@ -414,7 +475,7 @@ class TreeKVEngine:
                     for branch_id in sorted(parents)
                 },
                 final_scores={
-                    self._branch_name(branch_id): scores[branch_id]
+                    self._branch_name(branch_id): ranking_scores[branch_id]
                     for branch_id in sorted(parents)
                 },
                 scorer=request.tree.scorer,
@@ -538,9 +599,15 @@ class TreeKVEngine:
             "max_depth": max(1, request.max_tokens),
             "budget_tokens": tree.budget_tokens if tree else request.max_tokens,
             "per_branch_token_budget": request.max_tokens,
-            "seed": request.seed if request.seed is not None else 0,
+            "seed": cls._resolve_seed(request.seed),
             "scorer": scorer,
         }
+
+    @staticmethod
+    def _resolve_seed(seed: int | None) -> int:
+        """Resolve an omitted/null request seed to the documented default."""
+
+        return 0 if seed is None else seed
 
     @staticmethod
     def _sample(
@@ -548,12 +615,13 @@ class TreeKVEngine:
         request: GenerationRequest,
         generator: torch.Generator,
     ) -> tuple[int, float]:
-        scores = logits.float()
+        model_scores = logits.float()
+        sampling_scores = model_scores
         if request.temperature == 0:
-            token_id = int(torch.argmax(scores).item())
+            token_id = int(torch.argmax(sampling_scores).item())
         else:
-            scores = scores / request.temperature
-            probabilities = torch.softmax(scores, dim=-1)
+            sampling_scores = sampling_scores / request.temperature
+            probabilities = torch.softmax(sampling_scores, dim=-1)
             if request.top_p < 1.0:
                 sorted_probabilities, sorted_indices = torch.sort(
                     probabilities, descending=True
@@ -570,7 +638,7 @@ class TreeKVEngine:
             token_id = int(
                 torch.multinomial(probabilities, 1, generator=generator).item()
             )
-        logprob = float(torch.log_softmax(scores, dim=-1)[token_id].item())
+        logprob = float(torch.log_softmax(model_scores, dim=-1)[token_id].item())
         if not math.isfinite(logprob):
             raise RuntimeError("model produced a non-finite sampled-token logprob")
         return token_id, logprob

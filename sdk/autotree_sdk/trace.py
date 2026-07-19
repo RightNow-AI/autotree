@@ -114,9 +114,7 @@ class TraceAssembler:
             )
         branch.token_indices.append(event.token_index)
         branch.tokens.append(event.token)
-        # The current wire event has no token_id. Preserve alignment without
-        # inventing a tokenizer- or model-dependent ID.
-        branch.token_ids.append(None)
+        branch.token_ids.append(event.token_id)
         branch.token_logprobs.append(event.logprob)
         self._token_count += 1
 

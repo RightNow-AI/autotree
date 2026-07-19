@@ -3,12 +3,17 @@
 Status: **NORMATIVE** for `autotree-serve`, `autotree-sdk`, and consumers of
 `POST /v1/tree/completions`.
 
-Contract version: **1.1.0**. The `/v1` path identifies this major wire version.
+Contract version: **1.3.0**. The `/v1` path identifies this major wire version.
 Breaking changes require a new major endpoint or an explicitly negotiated wire
 version. Additive response fields may be introduced within v1; clients must not
 infer semantics from fields that are not specified here.
 
 Version 1.1.0 adds the terminal `error` stream event and the `[DONE]` sentinel.
+Version 1.2.0 defines `token.logprob` as the unscaled model log probability,
+independent of the sampling temperature and nucleus truncation, and defines
+terminal branch scores on the scheduler's mean per-token path scale.
+Version 1.3.0 adds the nullable `token.token_id` field and makes the default
+seed resolution explicit.
 
 The key words **MUST**, **MUST NOT**, **SHOULD**, and **MAY** are normative.
 
@@ -28,7 +33,7 @@ The request body is JSON with these fields:
 | `top_p` | number | no | Greater than 0 and at most 1; default 1. |
 | `stop` | string or string array | no | Stop sequence or sequences. |
 | `n` | integer | no | MUST equal 1; default 1. |
-| `seed` | integer or null | no | Sampling seed. |
+| `seed` | integer or null | no | Sampling seed. Omitted or `null` resolves to `0`. |
 | `user` | string or null | no | Caller-provided user identifier. |
 | `stream_options` | object or null | no | Accepted for OpenAI compatibility. Tree streams always report usage in `done`. |
 
@@ -116,15 +121,20 @@ event is followed by `data: [DONE]` and a blank line. Successful streams end wit
 ### `token`
 
 ```json
-{"type":"token","branch_id":"b0","token_index":0,"token":"hello","logprob":-0.25}
+{"type":"token","branch_id":"b0","token_index":0,"token":"hello","token_id":15339,"logprob":-0.25}
 ```
 
 - `branch_id`: branch that owns this token span.
 - `token_index`: zero-based index within that branch's own emitted tokens.
 - `token`: exact text span contributed by this event.
-- `logprob`: finite natural-log probability assigned by the engine's sampler to
-  this sampled token. It MUST be the real sampled-token log probability, not a
-  branch score or placeholder.
+- `token_id`: sampled model vocabulary ID, or `null` only when the serving
+  engine cannot provide an ID. Consumers MUST NOT infer an ID by retokenizing
+  `token` text.
+- `logprob`: finite natural-log probability of this sampled token under the
+  model's raw full-vocabulary logits: `log_softmax(raw_logits)[token_id]`. It is
+  independent of temperature and `top_p`, is not a branch score or placeholder,
+  and is not special-cased to `0.0` for greedy sampling. A behavior-policy
+  logprob, if added later, MUST use a separate explicitly named field.
 
 ### `branch_pruned`
 
@@ -227,7 +237,7 @@ below:
 | `merged_count` | integer | Number of `branch_merged` events. |
 | `winner_branch_id` | string | MUST equal `done.branch_id`. |
 | `tokens_spent_per_branch` | object | Every branch ID mapped to its count of owned `token` events. |
-| `final_scores` | object | Every branch ID mapped to its finite final branch score. This is branch-keyed, never positional. |
+| `final_scores` | object | Every branch ID mapped to its finite mean per-token path score used for final winner ordering. This is branch-keyed, never positional. |
 | `scorer` | string or null | Executed scorer identifier. |
 | `kv_reuse_ratio` | number | `logical_tokens / physical_tokens`; finite and at least 1. |
 

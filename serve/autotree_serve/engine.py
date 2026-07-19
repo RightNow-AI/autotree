@@ -99,6 +99,7 @@ except ModuleNotFoundError as error:
         token: str
         token_index: int
         logprob: float
+        token_id: int | None = None
         type: Literal["token"] = field(default="token", init=False)
 
     @dataclass(frozen=True, slots=True)
@@ -265,6 +266,7 @@ class DeterministicEngine:
                     token=tokens[token_index],
                     token_index=token_index,
                     logprob=branch_samples[branch_id][token_index][1],
+                    token_id=None,
                 )
                 await asyncio.sleep(0)
 

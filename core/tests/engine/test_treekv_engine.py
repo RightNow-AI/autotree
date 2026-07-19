@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from collections import deque
 from dataclasses import asdict, replace
 
 import pytest
+import torch
 
 from autotree_core.engine import (
     BranchMerged,
@@ -128,6 +130,88 @@ class ConvergingScheduler:
         return commands
 
 
+class MeanRankingScheduler:
+    """Finalize branches after ranking their externally supplied mean scores."""
+
+    def __init__(
+        self,
+        config: dict[str, object],
+        observed_scores: dict[int, list[float]],
+    ) -> None:
+        self.config = config
+        self.observed_scores = observed_scores
+        self._commands: deque[dict[str, object]] = deque()
+
+    def feed_event(self, event: dict[str, object]) -> None:
+        if event["type"] != "value_scored":
+            return
+        branch_id = int(event["branch"])
+        self.observed_scores[branch_id].append(float(event["score"]))
+        if branch_id == 0:
+            self._commands.extend(
+                [
+                    {"type": "fork_at", "branch": 0, "width": 2},
+                    {"type": "continue", "branch": 1},
+                    {"type": "continue", "branch": 2},
+                ]
+            )
+        elif branch_id == 2 and len(self.observed_scores[2]) == 1:
+            self._commands.extend(
+                [
+                    {"type": "finalize", "branch": 1},
+                    {"type": "continue", "branch": 2},
+                ]
+            )
+        elif branch_id == 2 and len(self.observed_scores[2]) == 2:
+            self._commands.append({"type": "continue", "branch": 2})
+        elif branch_id == 2 and len(self.observed_scores[2]) == 3:
+            self._commands.extend(
+                [
+                    {"type": "finalize", "branch": 2},
+                    {"type": "kill", "branch": 0, "reason": "fork_replaced"},
+                ]
+            )
+
+    def poll_commands(self) -> list[dict[str, object]]:
+        commands = list(self._commands)
+        self._commands.clear()
+        return commands
+
+
+class EosForkScheduler:
+    """Fork non-terminal tokens, but finalize immediately when eos is explicit."""
+
+    def __init__(
+        self,
+        config: dict[str, object],
+        observed_events: list[dict[str, object]],
+    ) -> None:
+        self.config = config
+        self.observed_events = observed_events
+        self._commands: deque[dict[str, object]] = deque()
+
+    def feed_event(self, event: dict[str, object]) -> None:
+        self.observed_events.append(event)
+        if event["type"] != "token_sampled":
+            return
+        if event.get("eos", False):
+            self._commands.append({"type": "finalize", "branch": event["branch"]})
+        else:
+            self._commands.extend(
+                [
+                    {"type": "fork_at", "branch": event["branch"], "width": 2},
+                    {"type": "finalize", "branch": 1},
+                    {"type": "finalize", "branch": 2},
+                    {"type": "kill", "branch": 0, "reason": "fork_replaced"},
+                ]
+            )
+
+    def poll_commands(self) -> list[dict[str, object]]:
+        commands = list(self._commands)
+        self._commands.clear()
+        return commands
+
+
 def request(*, budget_tokens: int = 3) -> GenerationRequest:
     return GenerationRequest(
         model="tiny-engine-model",
@@ -149,6 +233,41 @@ def request(*, budget_tokens: int = 3) -> GenerationRequest:
 
 async def collect(engine: TreeKVEngine, generation_request: GenerationRequest):
     return [event async for event in engine.generate(generation_request)]
+
+
+@pytest.mark.parametrize(
+    ("temperature", "top_p", "seed"),
+    [
+        pytest.param(0.5, 0.7, 11, id="nucleus-sampling"),
+        pytest.param(2.0, 1.0, 29, id="non-unit-temperature"),
+    ],
+)
+def test_sample_reports_unscaled_model_logprob(
+    temperature: float,
+    top_p: float,
+    seed: int,
+) -> None:
+    logits = torch.tensor([3.0, 2.0, 1.0, -1.0])
+    generation_request = replace(
+        request(),
+        temperature=temperature,
+        top_p=top_p,
+    )
+
+    token_id, logprob = TreeKVEngine._sample(
+        logits,
+        generation_request,
+        torch.Generator().manual_seed(seed),
+    )
+
+    expected = float(torch.log_softmax(logits.float(), dim=-1)[token_id].item())
+    assert math.isfinite(logprob)
+    assert logprob == pytest.approx(expected)
+
+
+def test_null_seed_resolves_to_documented_zero_default() -> None:
+    assert TreeKVEngine._resolve_seed(None) == 0
+    assert TreeKVEngine._resolve_seed(17) == 17
 
 
 def test_fork_ids_events_and_kill_reclaim_real_tree_kv_pages(tiny_engine_case) -> None:
@@ -179,6 +298,7 @@ def test_fork_ids_events_and_kill_reclaim_real_tree_kv_pages(tiny_engine_case) -
     done = next(event for event in events if isinstance(event, GenerationDone))
     token_events = [event for event in events if isinstance(event, TokenGenerated)]
     assert done.usage.completion_tokens == len(token_events) == 3
+    assert all(event.token_id is not None for event in token_events)
     assert done.tree_summary is not None
     assert done.tree_summary.kv_reuse_ratio > 1.0
     assert set(done.tree_summary.final_scores) == {
@@ -243,6 +363,55 @@ def test_same_seed_produces_identical_winning_completion(tiny_engine_case) -> No
     assert first_done.tree_summary == second_done.tree_summary
 
 
+def test_winner_uses_scheduler_mean_score_across_fork(
+    tiny_engine_case,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed_scores: dict[int, list[float]] = {0: [], 1: [], 2: []}
+    engine = TreeKVEngine(
+        model_id="tiny-engine-model",
+        executor=tiny_engine_case.executor,
+        tokenizer=tiny_engine_case.tokenizer,
+        scheduler_factory=lambda config: MeanRankingScheduler(config, observed_scores),
+    )
+    samples = iter(
+        [
+            (10, -10.0),
+            (11, -0.1),
+            (12, -1.0),
+            (13, -1.0),
+            (14, -1.0),
+        ]
+    )
+    monkeypatch.setattr(
+        engine,
+        "_sample",
+        lambda _logits, _request, _generator: next(samples),
+    )
+    generation_request = replace(
+        request(budget_tokens=5),
+        tree=TreeExecution(
+            policy="beam",
+            branches=2,
+            budget_tokens=5,
+            scorer="external",
+        ),
+    )
+
+    events = asyncio.run(collect(engine, generation_request))
+
+    assert observed_scores[1][0] == pytest.approx((-10.0 - 0.1) / 2)
+    assert observed_scores[2] == pytest.approx(
+        [(-10.0 - 1.0) / 2, (-10.0 - 2.0) / 3, (-10.0 - 3.0) / 4]
+    )
+    done = next(event for event in events if isinstance(event, GenerationDone))
+    assert done.branch_id == "branch-2"
+    assert done.tree_summary is not None
+    assert done.tree_summary.winner_branch_id == "branch-2"
+    assert done.tree_summary.final_scores["branch-2"] == pytest.approx(-3.25)
+    assert done.tree_summary.final_scores["branch-1"] == pytest.approx(-5.05)
+
+
 def test_real_scheduler_never_exceeds_requested_tree_budget(tiny_engine_case) -> None:
     pytest.importorskip("autotree_scheduler")
     engine = TreeKVEngine(
@@ -256,6 +425,42 @@ def test_real_scheduler_never_exceeds_requested_tree_budget(tiny_engine_case) ->
 
     assert done.usage.completion_tokens == 3
     assert sum(done.tree_summary.tokens_spent_per_branch.values()) == 3
+
+
+@pytest.mark.parametrize("policy", ["beam", "best_first", "mcts"])
+def test_real_scheduler_keeps_engine_lifecycle_aligned_during_dedup(
+    tiny_engine_case,
+    policy: str,
+) -> None:
+    pytest.importorskip("autotree_scheduler")
+    executor = type(tiny_engine_case.executor)(
+        replace(tiny_engine_case.executor.config, page_size=2),
+        model=tiny_engine_case.executor.model,
+    )
+    engine = TreeKVEngine(
+        model_id="tiny-engine-model",
+        executor=executor,
+        tokenizer=tiny_engine_case.tokenizer,
+    )
+
+    generation_request = replace(
+        request(budget_tokens=6),
+        tree=TreeExecution(
+            policy=policy,
+            branches=2,
+            budget_tokens=6,
+            scorer=None,
+        ),
+    )
+    events = asyncio.run(collect(engine, generation_request))
+
+    done = next(event for event in events if isinstance(event, GenerationDone))
+    assert done.usage.completion_tokens <= 6
+    assert done.tree_summary is not None
+    assert done.tree_summary.branch_count > 1
+    assert done.tree_summary.kv_reuse_ratio > 1.0
+    if policy == "beam":
+        assert done.tree_summary.merged_count >= 1
 
 
 def test_eos_feeds_branch_exhausted_and_finishes_with_stop(
@@ -279,6 +484,73 @@ def test_eos_feeds_branch_exhausted_and_finishes_with_stop(
         "token_sampled",
         "branch_exhausted",
     ]
+    done = next(event for event in events if isinstance(event, GenerationDone))
+    assert done.finish_reason == "stop"
+
+
+def test_eos_token_is_not_forked_after_sampling(tiny_engine_case) -> None:
+    observed_events: list[dict[str, object]] = []
+    expected_id = int(
+        tiny_engine_case.executor.prefill([5, 6, 7, 8]).next_logits(0).argmax().item()
+    )
+    tiny_engine_case.tokenizer.eos_token_id = expected_id
+    engine = TreeKVEngine(
+        model_id="tiny-engine-model",
+        executor=tiny_engine_case.executor,
+        tokenizer=tiny_engine_case.tokenizer,
+        scheduler_factory=lambda config: EosForkScheduler(config, observed_events),
+    )
+
+    events = asyncio.run(collect(engine, request()))
+
+    starts = [event for event in events if isinstance(event, BranchStarted)]
+    assert [(event.branch_id, event.parent_id) for event in starts] == [
+        ("branch-0", None)
+    ]
+    sampled = next(
+        event for event in observed_events if event["type"] == "token_sampled"
+    )
+    assert sampled["eos"] is True
+    done = next(event for event in events if isinstance(event, GenerationDone))
+    assert done.branch_id == "branch-0"
+    assert done.finish_reason == "stop"
+
+
+def test_eos_does_not_send_value_after_scheduler_finalization(
+    tiny_engine_case,
+) -> None:
+    class RejectLateValueScheduler(EosForkScheduler):
+        def feed_event(self, event: dict[str, object]) -> None:
+            if event["type"] == "value_scored":
+                raise AssertionError("value_scored arrived after eos finalization")
+            super().feed_event(event)
+
+    observed_events: list[dict[str, object]] = []
+    expected_id = int(
+        tiny_engine_case.executor.prefill([5, 6, 7, 8]).next_logits(0).argmax().item()
+    )
+    tiny_engine_case.tokenizer.eos_token_id = expected_id
+    engine = TreeKVEngine(
+        model_id="tiny-engine-model",
+        executor=tiny_engine_case.executor,
+        tokenizer=tiny_engine_case.tokenizer,
+        scheduler_factory=lambda config: RejectLateValueScheduler(
+            config, observed_events
+        ),
+    )
+    generation_request = replace(
+        request(),
+        tree=TreeExecution(
+            policy="beam",
+            branches=2,
+            budget_tokens=3,
+            scorer="external",
+        ),
+    )
+
+    events = asyncio.run(collect(engine, generation_request))
+
+    assert [event["type"] for event in observed_events] == ["token_sampled"]
     done = next(event for event in events if isinstance(event, GenerationDone))
     assert done.finish_reason == "stop"
 

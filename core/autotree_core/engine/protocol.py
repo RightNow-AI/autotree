@@ -78,6 +78,7 @@ class TokenGenerated:
     token: str
     token_index: int
     logprob: float
+    token_id: int | None = None
     type: Literal["token"] = field(default="token", init=False)
 
 
