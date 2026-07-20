@@ -36,3 +36,14 @@ All lanes closed, all worktrees removed, fleet ledger updated.
 - AUTOTREE-002 (partially cleared): single-GPU validation done via Lambda; the
   end-to-end 3-10x ThoughtBench numbers still need multi-GPU serving runs
   (8x for 70B-class) — Lambda 8x A100 was $15.92/hr when checked.
+
+## Update 2026-07-20 — first real benchmark landed
+H100 run complete (~USD 28): MATH-500 L1-3 x25, Qwen3-8B bf16, 3 seeds.
+KV-reuse **8.79x** confirmed end-to-end; honest negative recorded (logprob-guided
+beam-8 acc@1 21.3% loses to sequential best-of-4 acc@4 56.0%; value scorer is the
+open frontier and this is its baseline). AIME infeasible at reference speed
+(documented). Results in leaderboard/results + thoughtbench/results (real
+provenance, claims unlocked); paper + docs/first-benchmark.md updated. Device
+plumbing (--device/--dtype) and RealProvenance schema shipped. Final verify green
+at 88e8f3c. Remaining founder-blocked: GitHub remote/domain (push + publish) and
+production-rate serving for frontier-difficulty rows.
