@@ -6,6 +6,7 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/RightNow-AI/autotree/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/RightNow-AI/autotree/actions/workflows/ci.yml/badge.svg"></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
   <img alt="Python" src="https://img.shields.io/badge/python-3.12-blue.svg">
   <img alt="Rust" src="https://img.shields.io/badge/rust-stable-orange.svg">

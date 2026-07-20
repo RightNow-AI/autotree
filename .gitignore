@@ -29,3 +29,4 @@ Thumbs.db
 # Internal working files, never shipped
 CLAUDE.md
 AGENTS-GOALs/
+figures/make_mechanism_gif.py
