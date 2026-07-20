@@ -130,23 +130,18 @@ class ConvergingScheduler:
         return commands
 
 
-class MeanRankingScheduler:
-    """Finalize branches after ranking their externally supplied mean scores."""
+class UnevenFinalizationScheduler:
+    """Finalize one short branch and one longer branch."""
 
-    def __init__(
-        self,
-        config: dict[str, object],
-        observed_scores: dict[int, list[float]],
-    ) -> None:
+    def __init__(self, config: dict[str, object]) -> None:
         self.config = config
-        self.observed_scores = observed_scores
         self._commands: deque[dict[str, object]] = deque()
+        self._branch_two_tokens = 0
 
     def feed_event(self, event: dict[str, object]) -> None:
-        if event["type"] != "value_scored":
+        if event["type"] != "token_sampled":
             return
         branch_id = int(event["branch"])
-        self.observed_scores[branch_id].append(float(event["score"]))
         if branch_id == 0:
             self._commands.extend(
                 [
@@ -155,16 +150,18 @@ class MeanRankingScheduler:
                     {"type": "continue", "branch": 2},
                 ]
             )
-        elif branch_id == 2 and len(self.observed_scores[2]) == 1:
+        elif branch_id == 2:
+            self._branch_two_tokens += 1
+        if branch_id == 2 and self._branch_two_tokens == 1:
             self._commands.extend(
                 [
                     {"type": "finalize", "branch": 1},
                     {"type": "continue", "branch": 2},
                 ]
             )
-        elif branch_id == 2 and len(self.observed_scores[2]) == 2:
+        elif branch_id == 2 and self._branch_two_tokens == 2:
             self._commands.append({"type": "continue", "branch": 2})
-        elif branch_id == 2 and len(self.observed_scores[2]) == 3:
+        elif branch_id == 2 and self._branch_two_tokens == 3:
             self._commands.extend(
                 [
                     {"type": "finalize", "branch": 2},
@@ -203,6 +200,48 @@ class EosForkScheduler:
                     {"type": "finalize", "branch": 1},
                     {"type": "finalize", "branch": 2},
                     {"type": "kill", "branch": 0, "reason": "fork_replaced"},
+                ]
+            )
+
+    def poll_commands(self) -> list[dict[str, object]]:
+        commands = list(self._commands)
+        self._commands.clear()
+        return commands
+
+
+class FinalizeAllScheduler:
+    """Fork the configured width, decode each child once, then finalize all."""
+
+    def __init__(self, config: dict[str, object]) -> None:
+        self.config = config
+        self._commands: deque[dict[str, object]] = deque()
+        self._child_tokens = 0
+
+    def feed_event(self, event: dict[str, object]) -> None:
+        if event["type"] != "token_sampled":
+            return
+        branch_id = int(event["branch"])
+        branches = int(self.config["branches"])
+        if branch_id == 0:
+            self._commands.extend(
+                [
+                    {"type": "fork_at", "branch": 0, "width": branches},
+                    *(
+                        {"type": "continue", "branch": child}
+                        for child in range(1, branches + 1)
+                    ),
+                ]
+            )
+            return
+        self._child_tokens += 1
+        if self._child_tokens == branches:
+            self._commands.extend(
+                [
+                    *(
+                        {"type": "finalize", "branch": child}
+                        for child in range(1, branches + 1)
+                    ),
+                    {"type": "kill", "branch": 0, "reason": "tree_budget_exhausted"},
                 ]
             )
 
@@ -367,12 +406,11 @@ def test_winner_uses_scheduler_mean_score_across_fork(
     tiny_engine_case,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    observed_scores: dict[int, list[float]] = {0: [], 1: [], 2: []}
     engine = TreeKVEngine(
         model_id="tiny-engine-model",
         executor=tiny_engine_case.executor,
         tokenizer=tiny_engine_case.tokenizer,
-        scheduler_factory=lambda config: MeanRankingScheduler(config, observed_scores),
+        scheduler_factory=UnevenFinalizationScheduler,
     )
     samples = iter(
         [
@@ -394,16 +432,12 @@ def test_winner_uses_scheduler_mean_score_across_fork(
             policy="beam",
             branches=2,
             budget_tokens=5,
-            scorer="external",
+            scorer="logprob",
         ),
     )
 
     events = asyncio.run(collect(engine, generation_request))
 
-    assert observed_scores[1][0] == pytest.approx((-10.0 - 0.1) / 2)
-    assert observed_scores[2] == pytest.approx(
-        [(-10.0 - 1.0) / 2, (-10.0 - 2.0) / 3, (-10.0 - 3.0) / 4]
-    )
     done = next(event for event in events if isinstance(event, GenerationDone))
     assert done.branch_id == "branch-2"
     assert done.tree_summary is not None
@@ -516,15 +550,9 @@ def test_eos_token_is_not_forked_after_sampling(tiny_engine_case) -> None:
     assert done.finish_reason == "stop"
 
 
-def test_eos_does_not_send_value_after_scheduler_finalization(
+def test_self_consistency_uses_logprob_scheduler_during_execution(
     tiny_engine_case,
 ) -> None:
-    class RejectLateValueScheduler(EosForkScheduler):
-        def feed_event(self, event: dict[str, object]) -> None:
-            if event["type"] == "value_scored":
-                raise AssertionError("value_scored arrived after eos finalization")
-            super().feed_event(event)
-
     observed_events: list[dict[str, object]] = []
     expected_id = int(
         tiny_engine_case.executor.prefill([5, 6, 7, 8]).next_logits(0).argmax().item()
@@ -534,9 +562,7 @@ def test_eos_does_not_send_value_after_scheduler_finalization(
         model_id="tiny-engine-model",
         executor=tiny_engine_case.executor,
         tokenizer=tiny_engine_case.tokenizer,
-        scheduler_factory=lambda config: RejectLateValueScheduler(
-            config, observed_events
-        ),
+        scheduler_factory=lambda config: EosForkScheduler(config, observed_events),
     )
     generation_request = replace(
         request(),
@@ -544,7 +570,7 @@ def test_eos_does_not_send_value_after_scheduler_finalization(
             policy="beam",
             branches=2,
             budget_tokens=3,
-            scorer="external",
+            scorer="self_consistency",
         ),
     )
 
@@ -553,6 +579,127 @@ def test_eos_does_not_send_value_after_scheduler_finalization(
     assert [event["type"] for event in observed_events] == ["token_sampled"]
     done = next(event for event in events if isinstance(event, GenerationDone))
     assert done.finish_reason == "stop"
+
+
+def _run_self_consistency_case(
+    tiny_engine_case,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    answers: list[str],
+    logprobs: list[float],
+) -> GenerationDone:
+    engine = TreeKVEngine(
+        model_id="tiny-engine-model",
+        executor=tiny_engine_case.executor,
+        tokenizer=tiny_engine_case.tokenizer,
+        scheduler_factory=FinalizeAllScheduler,
+    )
+    token_ids = iter(range(20, 21 + len(answers)))
+    samples = iter(zip(token_ids, logprobs, strict=True))
+    decoded = {20: "Reasoning. "}
+    decoded.update(
+        {token_id: text for token_id, text in zip(range(21, 21 + len(answers)), answers)}
+    )
+    monkeypatch.setattr(
+        engine,
+        "_sample",
+        lambda _logits, _request, _generator: next(samples),
+    )
+    monkeypatch.setattr(
+        tiny_engine_case.tokenizer,
+        "decode",
+        lambda token_ids, **_kwargs: decoded[token_ids[0]],
+    )
+    generation_request = replace(
+        request(budget_tokens=1 + len(answers)),
+        tree=TreeExecution(
+            policy="beam",
+            branches=len(answers),
+            budget_tokens=1 + len(answers),
+            scorer="self_consistency",
+        ),
+    )
+
+    events = asyncio.run(collect(engine, generation_request))
+    return next(event for event in events if isinstance(event, GenerationDone))
+
+
+def test_self_consistency_majority_beats_logprob_favorite(
+    tiny_engine_case,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    done = _run_self_consistency_case(
+        tiny_engine_case,
+        monkeypatch,
+        answers=["Answer: 7.", "Answer: 7.", "Answer: 9."],
+        logprobs=[-0.1, -2.0, -1.0, -0.01],
+    )
+
+    assert done.branch_id == "branch-2"
+    assert done.text.endswith("Answer: 7.")
+    assert done.tree_summary is not None
+    assert done.tree_summary.winner_branch_id == "branch-2"
+    assert done.tree_summary.scorer == "self_consistency"
+
+
+def test_self_consistency_group_tie_breaks_by_summed_logprob(
+    tiny_engine_case,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    done = _run_self_consistency_case(
+        tiny_engine_case,
+        monkeypatch,
+        answers=["Answer: 7.", "Answer: 7.", "Answer: 9.", "Answer: 9."],
+        logprobs=[-0.1, -1.0, -2.0, -0.2, -0.3],
+    )
+
+    assert done.branch_id == "branch-3"
+    assert done.text.endswith("Answer: 9.")
+
+
+def test_self_consistency_all_singletons_fall_back_to_logprob(
+    tiny_engine_case,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    done = _run_self_consistency_case(
+        tiny_engine_case,
+        monkeypatch,
+        answers=["Answer: 7.", "Answer: 8.", "Answer: 9."],
+        logprobs=[-0.1, -1.0, -0.2, -0.5],
+    )
+
+    assert done.branch_id == "branch-2"
+
+
+def test_self_consistency_selects_winner_at_exact_tree_budget(
+    tiny_engine_case,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    done = _run_self_consistency_case(
+        tiny_engine_case,
+        monkeypatch,
+        answers=["Answer: 5.", "Answer: 5.", "Answer: 6."],
+        logprobs=[-0.1, -0.8, -0.7, -0.01],
+    )
+
+    assert done.usage.completion_tokens == 4
+    assert done.branch_id == "branch-2"
+
+
+def test_engine_rejects_unknown_scorer(tiny_engine_case) -> None:
+    engine = TreeKVEngine(
+        model_id="tiny-engine-model",
+        executor=tiny_engine_case.executor,
+        tokenizer=tiny_engine_case.tokenizer,
+        scheduler_factory=ScriptedScheduler,
+    )
+    generation_request = replace(
+        request(),
+        tree=replace(request().tree, scorer="external"),
+    )
+
+    with pytest.raises(ValueError, match="self_consistency"):
+        asyncio.run(collect(engine, generation_request))
 
 
 def test_mid_decode_capacity_exhaustion_is_promoted_to_engine_error(

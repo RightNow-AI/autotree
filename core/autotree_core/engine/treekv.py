@@ -16,6 +16,7 @@ from transformers import AutoConfig, AutoTokenizer
 from autotree_core.kv import KVCapacityError
 from autotree_core.modeling import ModelExecution, ModelExecutor, ModelExecutorConfig
 
+from .answers import extract_final_answer
 from .protocol import (
     BranchMerged,
     BranchPruned,
@@ -321,15 +322,6 @@ class TreeKVEngine:
                         "eos": branch_exhausted,
                     }
                 )
-                if self._uses_external_scorer(request) and not branch_exhausted:
-                    scheduler.feed_event(
-                        {
-                            "type": "value_scored",
-                            "branch": branch_id,
-                            "score": scores[branch_id]
-                            / max(ranking_token_counts[branch_id], 1),
-                        }
-                    )
                 events.append(
                     TokenGenerated(
                         branch_id=self._branch_name(branch_id),
@@ -463,7 +455,13 @@ class TreeKVEngine:
             / max(ranking_token_counts[branch_id], 1)
             for branch_id in parents
         }
-        winner = max(finalized, key=lambda branch: (ranking_scores[branch], -branch))
+        winner = self._select_winner(
+            finalized=finalized,
+            scorer=request.tree.scorer if request.tree is not None else None,
+            path_text=path_text,
+            cumulative_logprobs=scores,
+            ranking_scores=ranking_scores,
+        )
         for branch_id in sorted(finalized - {winner}):
             pruned_count += 1
             yield BranchPruned(
@@ -575,11 +573,38 @@ class TreeKVEngine:
         return candidate if candidate.ratio > current.ratio else current
 
     @staticmethod
-    def _uses_external_scorer(request: GenerationRequest) -> bool:
-        return request.tree is not None and request.tree.scorer in {
-            "external",
-            "value_head",
-        }
+    def _select_winner(
+        *,
+        finalized: set[int],
+        scorer: str | None,
+        path_text: dict[int, str],
+        cumulative_logprobs: dict[int, float],
+        ranking_scores: dict[int, float],
+    ) -> int:
+        if scorer != "self_consistency":
+            return max(
+                finalized, key=lambda branch: (ranking_scores[branch], -branch)
+            )
+
+        groups: dict[tuple[str, object], list[int]] = {}
+        for branch_id in sorted(finalized):
+            answer = extract_final_answer(path_text[branch_id])
+            key = ("answer", answer) if answer is not None else ("branch", branch_id)
+            groups.setdefault(key, []).append(branch_id)
+
+        winning_group = max(
+            groups.values(),
+            key=lambda branches: (
+                len(branches),
+                sum(cumulative_logprobs[branch] for branch in branches),
+                max(cumulative_logprobs[branch] for branch in branches),
+                -min(branches),
+            ),
+        )
+        return max(
+            winning_group,
+            key=lambda branch: (cumulative_logprobs[branch], -branch),
+        )
 
     def _token_exhausts_branch(
         self,
@@ -600,10 +625,10 @@ class TreeKVEngine:
     def _scheduler_config(cls, request: GenerationRequest) -> dict[str, object]:
         tree = request.tree
         policy = tree.policy.replace("_", "-") if tree else "beam"
-        scorer = tree.scorer if tree and tree.scorer is not None else "logprob"
-        if scorer not in {"logprob", "external", "value_head"}:
+        requested_scorer = tree.scorer if tree else None
+        if requested_scorer not in {None, "logprob", "self_consistency"}:
             raise ValueError(
-                "TreeKVEngine scorer must be 'logprob', 'external', or 'value_head'"
+                "TreeKVEngine scorer must be None, 'logprob', or 'self_consistency'"
             )
         branches = tree.branches if tree else 1
         return {
@@ -615,7 +640,7 @@ class TreeKVEngine:
             "budget_tokens": tree.budget_tokens if tree else request.max_tokens,
             "per_branch_token_budget": request.max_tokens,
             "seed": cls._resolve_seed(request.seed),
-            "scorer": scorer,
+            "scorer": "logprob",
         }
 
     @staticmethod
