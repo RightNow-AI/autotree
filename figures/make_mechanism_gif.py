@@ -20,15 +20,21 @@ from matplotlib.lines import Line2D
 from matplotlib.patches import FancyBboxPatch, PathPatch, Rectangle
 from matplotlib.path import Path
 
-GREEN = "#76B900"
-GREEN_DIM = "#4e7a00"
-WHITE = "#ececec"
-WHITE_DIM = "#b9b9b9"
-DIM = "#7a7a7a"
-WASTE = "#3a3a3a"
-BG = "#0a0a0a"
-PANEL = "#111311"
-BORDER = "#242424"
+PALETTES = {
+    "dark": dict(
+        GREEN="#76B900", GREEN_DIM="#4e7a00",
+        WHITE="#ececec", WHITE_DIM="#b9b9b9",
+        DIM="#7a7a7a", WASTE="#3a3a3a",
+        BG="#0a0a0a", PANEL="#111311", BORDER="#242424", TRACK="#1c1c1c",
+    ),
+    "light": dict(
+        GREEN="#76B900", GREEN_DIM="#5a8c00",
+        WHITE="#16161d", WHITE_DIM="#4a4a52",
+        DIM="#8a8a90", WASTE="#d7d7db",
+        BG="#ffffff", PANEL="#f5f6f4", BORDER="#e3e3e6", TRACK="#e9e9ec",
+    ),
+}
+GREEN = GREEN_DIM = WHITE = WHITE_DIM = DIM = WASTE = BG = PANEL = BORDER = TRACK = ""
 
 SEG_SEMI = font_manager.FontProperties(family="Segoe UI", weight="semibold")
 SEG_REG = font_manager.FontProperties(family="Segoe UI", weight="regular")
@@ -50,7 +56,7 @@ FINAL_SCORE = {0: 1.84, 1: 0.71, 2: 0.55, 3: 0.32, 4: 1.62, 5: 0.88, 6: 0.44, 7:
 HOLD = 22
 
 fig = plt.figure(figsize=(12.8, 7.2), dpi=100)
-fig.patch.set_facecolor(BG)
+fig.patch.set_facecolor(PALETTES["dark"]["BG"])
 ax = fig.add_axes([0, 0, 1, 1])
 
 
@@ -81,7 +87,7 @@ def axis_ticks(x0: float, y: float) -> None:
 
 def pool_gauge(x0: float, y: float, used: int, color: str, label: str) -> None:
     width = 5.35
-    ax.add_patch(Rectangle((x0, y), width, 0.14, facecolor="#1c1c1c", zorder=2))
+    ax.add_patch(Rectangle((x0, y), width, 0.14, facecolor=TRACK, zorder=2))
     frac = min(1.0, used / POOL)
     ax.add_patch(Rectangle((x0, y), width * frac, 0.14, facecolor=color,
                            alpha=0.85, zorder=3))
@@ -248,7 +254,10 @@ def draw_frame(frame: int) -> None:
 
 
 total_frames = int(COLS / SPEED) + HOLD
-anim = FuncAnimation(fig, draw_frame, frames=total_frames, interval=62)
-out = r"C:/Users/jaber/RightNow-Full/AutoTree/assets/autotree-mechanism.gif"
-anim.save(out, writer=PillowWriter(fps=16))
-print("gif written:", out, "frames:", total_frames)
+for mode, palette in PALETTES.items():
+    globals().update(palette)
+    fig.patch.set_facecolor(palette["BG"])
+    anim = FuncAnimation(fig, draw_frame, frames=total_frames, interval=62)
+    out = rf"C:/Users/jaber/RightNow-Full/AutoTree/assets/mechanism-{mode}.gif"
+    anim.save(out, writer=PillowWriter(fps=16))
+    print("gif written:", out, "frames:", total_frames)

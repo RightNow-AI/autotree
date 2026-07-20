@@ -17,7 +17,10 @@ Rust scheduler prune or continue them under a hard token budget. The API is
 OpenAI-compatible: adopting it means changing one `base_url`.
 
 <p align="center">
-  <img src="assets/autotree-mechanism.gif" alt="AutoTree vs sequential serving" width="820">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/mechanism-dark.gif">
+    <img src="assets/mechanism-light.gif" alt="AutoTree vs sequential serving" width="820">
+  </picture>
 </p>
 
 ## Measured results
