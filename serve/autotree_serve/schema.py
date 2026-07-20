@@ -20,7 +20,7 @@ class TreeParameters(BaseModel):
     policy: Literal["beam", "best_first", "mcts"]
     branches: int = Field(ge=1, le=64)
     budget_tokens: int = Field(ge=1, le=1_000_000)
-    scorer: str | None = None
+    scorer: Literal["logprob", "self_consistency"] | None = None
 
 
 class StreamOptions(BaseModel):

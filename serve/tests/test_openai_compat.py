@@ -154,7 +154,7 @@ async def test_tree_extra_body_is_accepted_and_reflected(openai_client):
                 "policy": "beam",
                 "branches": 4,
                 "budget_tokens": 13,
-                "scorer": "toy-score",
+                "scorer": "self_consistency",
             }
         },
     )
@@ -162,7 +162,7 @@ async def test_tree_extra_body_is_accepted_and_reflected(openai_client):
     tree = completion.model_extra["tree"]
     assert tree["policy"] == "beam"
     assert tree["branch_count"] == 4
-    assert tree["scorer"] == "toy-score"
+    assert tree["scorer"] == "self_consistency"
     assert sum(tree["tokens_spent_per_branch"].values()) == 13
     assert completion.usage.completion_tokens == 13
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+
+import pytest
 import math
 
 import httpx
@@ -156,7 +158,7 @@ async def test_tree_non_stream_returns_winner_and_summary(http_client):
                 "policy": "mcts",
                 "branches": 3,
                 "budget_tokens": 10,
-                "scorer": "deterministic",
+                "scorer": "self_consistency",
             },
         },
     )
@@ -167,6 +169,45 @@ async def test_tree_non_stream_returns_winner_and_summary(http_client):
     assert body["tree"]["branch_count"] == 3
     assert len(body["tree"]["final_scores"]) == 3
     assert body["tree"]["winner_branch_id"] in body["tree"]["final_scores"]
+    assert body["tree"]["scorer"] == "self_consistency"
+
+
+@pytest.mark.parametrize("scorer", [None, "logprob", "self_consistency"])
+async def test_tree_accepts_supported_scorers(http_client, scorer):
+    response = await http_client.post(
+        "/v1/tree/completions",
+        json={
+            "model": MODEL_ID,
+            "messages": [{"role": "user", "content": "pick a branch"}],
+            "tree": {
+                "policy": "beam",
+                "branches": 2,
+                "budget_tokens": 3,
+                "scorer": scorer,
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["tree"]["scorer"] == scorer
+
+
+async def test_tree_rejects_unknown_scorer(http_client):
+    response = await http_client.post(
+        "/v1/tree/completions",
+        json={
+            "model": MODEL_ID,
+            "messages": [{"role": "user", "content": "reject scorer"}],
+            "tree": {
+                "policy": "beam",
+                "branches": 2,
+                "budget_tokens": 3,
+                "scorer": "external",
+            },
+        },
+    )
+
+    assert 400 <= response.status_code < 500
 
 
 async def test_chat_tree_stream_exposes_branch_events_as_chunk_extensions(http_client):
