@@ -1,5 +1,8 @@
 <p align="center">
-  <img src="assets/autotree-banner.svg" alt="AutoTree" width="820">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/autotree-banner-dark.svg">
+    <img src="assets/autotree-banner-light.svg" alt="AutoTree" width="760">
+  </picture>
 </p>
 
 <p align="center">
