@@ -46,7 +46,7 @@ The `tree` object has exactly these fields:
 | `policy` | string | yes | One of `beam`, `best_first`, or `mcts`. |
 | `branches` | integer | yes | 1 through 64. |
 | `budget_tokens` | integer | yes | 1 through 1,000,000. |
-| `scorer` | string or null | no | Optional scorer identifier. |
+| `scorer` | string or null | no | One of `logprob` or `self_consistency`; `null` uses log-probability selection. |
 
 The following OpenAI chat fields are explicitly unsupported and MUST produce an
 `unsupported_feature` error when present: `audio`, `frequency_penalty`,
@@ -237,9 +237,16 @@ below:
 | `merged_count` | integer | Number of `branch_merged` events. |
 | `winner_branch_id` | string | MUST equal `done.branch_id`. |
 | `tokens_spent_per_branch` | object | Every branch ID mapped to its count of owned `token` events. |
-| `final_scores` | object | Every branch ID mapped to its finite mean per-token path score used for final winner ordering. This is branch-keyed, never positional. |
+| `final_scores` | object | Every branch ID mapped to its finite mean per-token path score. This is branch-keyed, never positional. |
 | `scorer` | string or null | Executed scorer identifier. |
 | `kv_reuse_ratio` | number | `logical_tokens / physical_tokens`; finite and at least 1. |
+
+`self_consistency` is a final selection rule, not a learned value model. It
+groups finalized branches by extracted numeric answer (preferring the last
+boxed answer, otherwise the last numeric token). The largest agreement group
+wins; cumulative log-probability breaks group-size ties and selects the branch
+within the winning group. Branches without an extractable answer are independent
+singleton groups. `final_scores` remains the mean per-token path score mapping.
 
 For a served tree completion, `physical_tokens` MUST be positive and
 `kv_reuse_ratio` MUST reconcile exactly with the `done.counters` values within
