@@ -1,4 +1,4 @@
-# AutoTree paper figures
+# AutoTree figures
 
 Regenerate the complete Phase-4 figure set from the repository root:
 

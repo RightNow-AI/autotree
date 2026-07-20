@@ -92,7 +92,6 @@ pin `torch==2.11.0+cu128` as shown or CUDA is silently unavailable.
 | `sdk/` | Typed Python client and rollout-trace exports for RL pipelines |
 | `thoughtbench/` | Benchmark harness with provenance-labeled fixture and real task sets |
 | `figures/` | Publication figure pipeline; regenerates every chart from results JSON |
-| `paper/` | arXiv-style draft; compiles with `tectonic main.tex` after generating figures |
 | `deploy/`, `grafana/` | Helm chart, plain manifests, SLURM templates, dashboard pack |
 
 The normative Tree-KV contract is
