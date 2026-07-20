@@ -59,6 +59,17 @@ def build_parser() -> argparse.ArgumentParser:
             "limit (default: 1.5)."
         ),
     )
+    serve.add_argument(
+        "--device",
+        default="cpu",
+        help="torch device for --engine treekv, e.g. cpu or cuda (default: cpu)",
+    )
+    serve.add_argument(
+        "--dtype",
+        default="float32",
+        choices=("float32", "bfloat16", "float16"),
+        help="model dtype for --engine treekv (default: float32)",
+    )
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8000)
     return parser
@@ -72,10 +83,12 @@ def main(argv: Sequence[str] | None = None) -> None:
                 args.model,
                 kv_pages=args.kv_pages,
                 kv_branch_headroom=args.kv_branch_headroom,
+                device=args.device,
+                dtype=args.dtype,
             )
         except Exception as error:
             print(
-                f"Failed to load Tree-KV CPU model {args.model!r}: {error}",
+                f"Failed to load Tree-KV model {args.model!r}: {error}",
                 file=sys.stderr,
             )
             raise SystemExit(2) from error
@@ -93,6 +106,8 @@ def _load_treekv_engine(
     *,
     kv_pages: int | None,
     kv_branch_headroom: float,
+    device: str = "cpu",
+    dtype: str = "float32",
 ):
     from autotree_core.engine import TreeKVEngine
 
@@ -100,6 +115,8 @@ def _load_treekv_engine(
         model_id=model_id,
         kv_pages=kv_pages,
         kv_branch_headroom=kv_branch_headroom,
+        device=device,
+        dtype=dtype,
     )
 
 

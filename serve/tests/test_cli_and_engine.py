@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from autotree_serve import cli
 from autotree_serve.cli import main
 from autotree_serve.engine import (
     DeterministicEngine,
@@ -36,7 +37,7 @@ def test_treekv_engine_model_load_failure_is_honest(capsys, monkeypatch):
 
     assert exc.value.code != 0
     error = capsys.readouterr().err
-    assert "Failed to load Tree-KV CPU model 'demo'" in error
+    assert "Failed to load Tree-KV model 'demo'" in error
     assert "weights unavailable" in error
 
 
@@ -44,7 +45,7 @@ def test_cli_starts_treekv_server(monkeypatch):
     called = {}
     fake_engine = DeterministicEngine("gpt2")
 
-    def fake_load(model_id, *, kv_pages, kv_branch_headroom):
+    def fake_load(model_id, *, kv_pages, kv_branch_headroom, device="cpu", dtype="float32"):
         called.update(
             model_id=model_id,
             kv_pages=kv_pages,
@@ -160,3 +161,20 @@ async def test_tree_winner_has_generated_content_when_budget_is_narrow():
     assert done.text
     assert done.tree_summary is not None
     assert done.tree_summary.tokens_spent_per_branch[done.branch_id] == 1
+
+
+def test_parser_accepts_device_and_dtype() -> None:
+    parser = cli.build_parser()
+    args = parser.parse_args(
+        ["serve", "--engine", "treekv", "--device", "cuda", "--dtype", "bfloat16"]
+    )
+
+    assert args.device == "cuda"
+    assert args.dtype == "bfloat16"
+
+
+def test_parser_device_defaults_stay_cpu_float32() -> None:
+    args = cli.build_parser().parse_args(["serve"])
+
+    assert args.device == "cpu"
+    assert args.dtype == "float32"

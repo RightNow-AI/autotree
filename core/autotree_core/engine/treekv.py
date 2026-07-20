@@ -52,8 +52,15 @@ class _KVSnapshot:
         return self.logical_tokens / max(self.physical_tokens, 1)
 
 
+_ENGINE_DTYPES = {
+    "float32": torch.float32,
+    "bfloat16": torch.bfloat16,
+    "float16": torch.float16,
+}
+
+
 class TreeKVEngine:
-    """CPU-capable demo engine using real model weights and real Tree-KV pages."""
+    """Engine using real model weights and real Tree-KV pages (CPU or CUDA)."""
 
     def __init__(
         self,
@@ -65,7 +72,13 @@ class TreeKVEngine:
         kv_pages: int | None = None,
         kv_branch_headroom: float = 1.5,
         dedup_every_steps: int | None = 1,
+        device: str = "cpu",
+        dtype: str = "float32",
     ) -> None:
+        if dtype not in _ENGINE_DTYPES:
+            raise ValueError(
+                f"dtype must be one of {sorted(_ENGINE_DTYPES)}, got {dtype!r}"
+            )
         if kv_pages is not None and (
             isinstance(kv_pages, bool) or not isinstance(kv_pages, int) or kv_pages <= 0
         ):
@@ -79,7 +92,9 @@ class TreeKVEngine:
         ):
             raise ValueError("dedup_every_steps must be a positive integer or None")
         if executor is None:
-            executor_config = ModelExecutorConfig(model_id=model_id)
+            executor_config = ModelExecutorConfig(
+                model_id=model_id, device=device, dtype=_ENGINE_DTYPES[dtype]
+            )
             if kv_pages is None:
                 model_config = AutoConfig.from_pretrained(model_id)
                 context_tokens = self._model_context_tokens(model_config)

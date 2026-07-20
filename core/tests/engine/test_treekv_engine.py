@@ -577,3 +577,42 @@ def test_mid_decode_capacity_exhaustion_is_promoted_to_engine_error(
     assert raised.value.required_pages == 1
     assert raised.value.available_pages == 0
     assert raised.value.capacity_pages == 2
+
+
+def test_engine_device_and_dtype_reach_executor_config(monkeypatch) -> None:
+    import autotree_core.engine.treekv as treekv_module
+
+    captured: dict[str, object] = {}
+
+    class CapturingExecutor:
+        def __init__(self, config):
+            captured["config"] = config
+            self.config = config
+
+    monkeypatch.setattr(treekv_module, "ModelExecutor", CapturingExecutor)
+    monkeypatch.setattr(
+        treekv_module.AutoConfig,
+        "from_pretrained",
+        classmethod(lambda cls, model_id: type("Cfg", (), {"n_positions": 64})()),
+    )
+    monkeypatch.setattr(
+        treekv_module.AutoTokenizer,
+        "from_pretrained",
+        classmethod(lambda cls, model_id: object()),
+    )
+
+    TreeKVEngine(
+        model_id="captured-model",
+        scheduler_factory=ScriptedScheduler,
+        device="cpu",
+        dtype="bfloat16",
+    )
+
+    config = captured["config"]
+    assert config.device == torch.device("cpu")
+    assert config.dtype is torch.bfloat16
+
+
+def test_engine_rejects_unknown_dtype() -> None:
+    with pytest.raises(ValueError, match="dtype must be one of"):
+        TreeKVEngine(model_id="any-model", dtype="int8")
