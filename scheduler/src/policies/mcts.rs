@@ -92,7 +92,7 @@ impl MctsPolicy {
             let score = exploitation + exploration;
             match best {
                 None => best = Some((score, child)),
-                Some((best_score, best_child))
+                Some((best_score, _))
                     if !uct_scores_nearly_equal(score, best_score)
                         && score.total_cmp(&best_score).is_gt() =>
                 {
