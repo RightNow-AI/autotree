@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 
 import {
@@ -43,8 +43,14 @@ export function loadResultsFromDirectory(
   });
 }
 
+export const REAL_RESULTS_DIRECTORY = resolve(process.cwd(), "results");
+
 export function loadResults(): ResultsDocument[] {
-  return loadResultsFromDirectory();
+  const documents = loadResultsFromDirectory();
+  if (existsSync(REAL_RESULTS_DIRECTORY)) {
+    documents.push(...loadResultsFromDirectory(REAL_RESULTS_DIRECTORY));
+  }
+  return documents;
 }
 
 export function modelSlug(model: string): string {
