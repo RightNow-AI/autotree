@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.hypothesis/
+dist/
+build/
+
+# Rust
+target/
+
+# Node
+node_modules/
+.next/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Local env
+.env
+.env.*
+
+# Internal working files, never shipped
+CLAUDE.md
+AGENTS-GOALs/
+figures/make_mechanism_gif.py
+paper/

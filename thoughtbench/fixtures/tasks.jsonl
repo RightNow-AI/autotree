@@ -1,0 +1,2 @@
+{"id":"fixture-arithmetic-1","prompt":"Fixture question: what is 2 + 2? Return only the final number.","answer":"4","grader":"numeric","tags":["fixture","arithmetic"]}
+{"id":"fixture-exact-1","prompt":"Fixture instruction: reply with the exact text fixture-ok.","answer":"fixture-ok","grader":"exact-match","tags":["fixture","exact"]}
