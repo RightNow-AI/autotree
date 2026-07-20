@@ -16,6 +16,10 @@ branches, forks candidate continuations with copy-on-write pages, and lets a
 Rust scheduler prune or continue them under a hard token budget. The API is
 OpenAI-compatible: adopting it means changing one `base_url`.
 
+<p align="center">
+  <img src="assets/autotree-mechanism.gif" alt="AutoTree vs sequential serving" width="820">
+</p>
+
 ## Measured results
 
 Everything below was measured on rented cloud GPUs. Full evidence, configs,
