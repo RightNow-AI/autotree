@@ -22,6 +22,29 @@ $16.4\times$ at 32 branches.  This measurement supports the mechanism claim
 free at the kernel level --- but it is not an end-to-end serving result and
 does not by itself establish the cost-per-correct-answer targets below.
 
+\subsection{First end-to-end measurement}
+
+A first full-protocol ThoughtBench run exists (single H100 PCIe 80GB,
+Qwen3-8B bfloat16 served through the reference engine; 25 numeric MATH-500
+tasks at difficulty levels 1--3; three seeds; temperature 0.7).  Sequential
+best-of-4 at 640 completion tokens per sample reached accuracy@1 of 30.7\%
+and accuracy@4 of 56.0\% at 3{,}159 output tokens per correct answer.  A
+beam-8 tree capped at 1{,}920 total budget tokens reached accuracy@1 of
+21.3\% at 5{,}011 tokens per correct answer, while measuring a
+\textbf{KV-reuse ratio of 8.79$\times$} --- direct end-to-end confirmation
+that tree execution shares prefix KV across branches at scale.
+
+The quality result is deliberately reported as a negative: with the default
+log-probability winner selection and thin per-branch budgets
+($\approx$240 tokens per branch), tree search \emph{loses} to independent
+sampling on tasks this model can already solve.  The architecture's
+value-scorer interface exists precisely to replace that selection rule, and
+this measurement establishes the baseline any value-guided configuration
+must beat.  AIME-difficulty tasks were attempted first and were infeasible
+at reference-engine decode speeds (every sample truncated mid-reasoning at
+1{,}024 tokens); production-rate serving is a prerequisite for
+frontier-difficulty rows.
+
 \subsection{Planned protocol}
 
 The planned evaluation compares identical model weights and decoding settings
