@@ -243,8 +243,6 @@ def draw_frame(frame: int) -> None:
                 color=GREEN, fontproperties=MONO)
 
     # footer
-    ax.text(0.55, 1.02, "Qwen3-8B on NVIDIA H100",
-            fontsize=10.5, color=DIM, fontproperties=SEG_REG)
     ax.text(12.25, 1.02, "github.com/RightNow-AI/autotree", fontsize=10.5,
             color=GREEN, fontproperties=MONO, ha="right")
 
