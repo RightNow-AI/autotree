@@ -1,10 +1,12 @@
 # ThoughtBench
 
-ThoughtBench is a fixture-first benchmark harness. The bundled tasks are tiny,
-synthetic contract fixtures; they are not AIME, GPQA, LiveCodeBench, or evidence
-for any performance, accuracy, or cost claim. Every results artifact carries
-the stamp `FIXTURE TASKS ONLY - NOT A REAL BENCHMARK RESULT.` and disallows
-benchmark claims.
+ThoughtBench is a benchmark harness with schema-enforced task provenance.
+Fixture task sets produce artifacts stamped
+`FIXTURE TASKS ONLY - NOT A REAL BENCHMARK RESULT.` with benchmark claims
+disallowed. Real task sets (declared with source and license) produce
+artifacts stamped as measured results with claims allowed, limited to the
+stated protocol scope. The first real run ships in `results/`; see
+`docs/first-benchmark.md` at the repository root.
 
 The package uses editable local path dependencies so the harness exercises the
 repository's real SDK and test server:

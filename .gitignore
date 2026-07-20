@@ -25,3 +25,7 @@ Thumbs.db
 # Local env
 .env
 .env.*
+
+# Internal working files, never shipped
+CLAUDE.md
+AGENTS-GOALs/

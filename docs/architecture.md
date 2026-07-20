@@ -37,7 +37,7 @@ contract for KV pages, tree state, tree-attention shapes, scheduler events, and
 the CPU/GPU environment boundary. Implementations and documentation should be
 reconciled to that specification rather than inventing a second tree model.
 
-[`CLAUDE.md`](../CLAUDE.md) is the product and research blueprint. It describes
-future phases as well as current goals, so it must not be read as a list of
-already shipped features. In particular, the 3-10x cost and 5x rollout targets
-are hypotheses that require reproducible GPU benchmark evidence.
+The project targets a 3-10x cost reduction at equal accuracy and a 5x gain in
+rollout throughput. Both are hypotheses until reproducible benchmark evidence
+exists at scale. Measured evidence so far is listed in the README and in
+[`first-benchmark.md`](first-benchmark.md).

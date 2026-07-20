@@ -6,7 +6,7 @@ The repository can run a real GPT-2 CPU tree completion end to end. The path
 includes a Hugging Face model executor, paged Tree-KV state, the Rust scheduler,
 the HTTP server, and a returned tree summary. CPU unit and contract suites also
 cover KV operations, reference attention, scheduling, serving, the SDK, and the
-fixture-only ThoughtBench harness.
+provenance-labeled ThoughtBench harness (fixture and real task sets).
 
 The server also has a seeded deterministic engine for API tests. It does not
 load model weights and should not be presented as a model-serving result.

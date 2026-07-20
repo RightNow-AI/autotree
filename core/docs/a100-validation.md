@@ -1,4 +1,4 @@
-# A100 GPU validation — 2026-07-19
+# A100 GPU validation - 2026-07-19
 
 First hardware validation of the AutoTree Tree-KV engine. Everything below was
 measured, not simulated. Environment: Lambda Cloud `gpu_1x_a100_sxm4`
