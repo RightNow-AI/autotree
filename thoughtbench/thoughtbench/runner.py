@@ -23,6 +23,8 @@ from . import __version__
 from .graders import grade_task
 from .metrics import aggregate_values, compute_metric_set
 from .models import (
+    FIXTURE_NOTICE,
+    REAL_NOTICE,
     AggregateMetrics,
     BudgetConfig,
     EngineConfigStamp,
@@ -441,7 +443,10 @@ def run_benchmark(config: RunConfig, *, output_path: Path | None = None) -> Resu
                 )
             )
     sdk_version = _package_version("autotree-sdk") or "unknown"
+    is_real = config.task_set.provenance.kind == "real"
     document = ResultsDocument(
+        artifact_notice=REAL_NOTICE if is_real else FIXTURE_NOTICE,
+        benchmark_claims_allowed=is_real,
         run_id=str(uuid4()),
         run_fingerprint=fingerprint,
         engine_config=EngineConfigStamp(

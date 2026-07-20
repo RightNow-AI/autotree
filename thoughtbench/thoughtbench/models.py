@@ -8,6 +8,9 @@ from typing import Literal
 from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, model_validator
 
 FIXTURE_NOTICE = "FIXTURE TASKS ONLY - NOT A REAL BENCHMARK RESULT."
+REAL_NOTICE = (
+    "REAL TASKS - MEASURED RESULT. Claims are limited to the stated protocol scope."
+)
 RESULTS_SCHEMA_VERSION = "thoughtbench.results.v2"
 
 
@@ -30,10 +33,17 @@ class FixtureProvenance(StrictModel):
     notice: Literal[FIXTURE_NOTICE] = FIXTURE_NOTICE
 
 
+class RealProvenance(StrictModel):
+    kind: Literal["real"] = "real"
+    source: str = Field(min_length=1)
+    license: str = Field(min_length=1)
+    notice: Literal[REAL_NOTICE] = REAL_NOTICE
+
+
 class TaskSetConfig(StrictModel):
     name: str = Field(min_length=1)
     path: Path
-    provenance: FixtureProvenance
+    provenance: FixtureProvenance | RealProvenance = Field(discriminator="kind")
 
 
 class PricingConfig(StrictModel):
@@ -202,7 +212,7 @@ class TaskSetStamp(StrictModel):
     name: str
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     task_count: int = Field(ge=1)
-    provenance: FixtureProvenance
+    provenance: FixtureProvenance | RealProvenance = Field(discriminator="kind")
 
 
 class EnvironmentStamp(StrictModel):
@@ -216,8 +226,20 @@ class EnvironmentStamp(StrictModel):
 
 class ResultsDocument(StrictModel):
     schema_version: Literal[RESULTS_SCHEMA_VERSION] = RESULTS_SCHEMA_VERSION
-    artifact_notice: Literal[FIXTURE_NOTICE] = FIXTURE_NOTICE
-    benchmark_claims_allowed: Literal[False] = False
+    artifact_notice: Literal[FIXTURE_NOTICE, REAL_NOTICE] = FIXTURE_NOTICE
+    benchmark_claims_allowed: bool = False
+    @model_validator(mode="after")
+    def validate_notice_matches_provenance(self) -> "ResultsDocument":
+        is_real = self.task_set.provenance.kind == "real"
+        expected_notice = REAL_NOTICE if is_real else FIXTURE_NOTICE
+        if self.artifact_notice != expected_notice:
+            raise ValueError("artifact_notice must match task-set provenance kind")
+        if self.benchmark_claims_allowed is not is_real:
+            raise ValueError(
+                "benchmark_claims_allowed must be True exactly when provenance is real"
+            )
+        return self
+
     run_id: str
     run_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
     engine_config: EngineConfigStamp
