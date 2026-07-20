@@ -218,3 +218,43 @@ describe("ThoughtBench results contract", () => {
     expect(() => validateResultsDocument(document)).toThrow(/schema_version/);
   });
 });
+
+describe("real task provenance", () => {
+  const REAL_NOTICE =
+    "REAL TASKS - MEASURED RESULT. Claims are limited to the stated protocol scope.";
+
+  function realCopy(): Record<string, any> {
+    const document = fixtureCopy();
+    document.task_set.provenance = {
+      kind: "real",
+      source: "MAA AIME 2025 via math-ai/aime25 (HF datasets)",
+      license: "MAA competition problems, publicly distributed",
+      notice: REAL_NOTICE,
+    };
+    document.artifact_notice = REAL_NOTICE;
+    document.benchmark_claims_allowed = true;
+    return document;
+  }
+
+  it("accepts a real-provenance document with claims allowed", () => {
+    const document = validateResultsDocument(realCopy());
+    expect(document.benchmark_claims_allowed).toBe(true);
+    expect(document.task_set.provenance.kind).toBe("real");
+  });
+
+  it("rejects real provenance whose claims flag stayed false", () => {
+    const document = realCopy();
+    document.benchmark_claims_allowed = false;
+    expect(() => validateResultsDocument(document)).toThrow(
+      /must match task-set provenance/,
+    );
+  });
+
+  it("rejects fixture provenance that tries to claim a real result", () => {
+    const document = fixtureCopy();
+    document.benchmark_claims_allowed = true;
+    expect(() => validateResultsDocument(document)).toThrow(
+      /must match task-set provenance/,
+    );
+  });
+});

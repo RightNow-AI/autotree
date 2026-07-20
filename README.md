@@ -6,12 +6,16 @@ AutoTree is an experimental engine for executing LLM reasoning as a tree. It
 shares prefix KV state, forks candidate branches, and lets a Rust scheduler
 prune or continue them under a token budget.
 
-Today, this repository provides a CPU demonstration with real GPT-2 weights,
-the Tree-KV data structures and reference kernels, an OpenAI-style HTTP API,
-a typed Python SDK, and a fixture-only benchmark harness. GPU kernels,
-large-model validation, production serving, and performance claims are future
-phases. The blueprint's 3-10x cost reduction and 5x rollout-throughput targets
-are hypotheses to be tested, not results from the current code.
+Today, this repository provides a CPU-first demonstration with real model
+weights, the Tree-KV data structures with both reference and Triton kernels,
+an OpenAI-style HTTP API, a typed Python SDK, and a benchmark harness that
+supports fixture and real task sets with schema-enforced provenance labels.
+The Triton tree-attention kernel and Qwen3-8B parity are validated on an
+NVIDIA A100 (see `core/docs/a100-validation.md`), and the server runs real
+models on CUDA via `--device cuda --dtype bfloat16`. Production serving at
+scale and the blueprint's 3-10x cost-reduction and 5x rollout-throughput
+targets remain hypotheses until end-to-end measurements are published with
+their configs.
 
 ## Five-minute CPU quickstart
 
@@ -55,6 +59,20 @@ and get pruned in real time. (The page also renders merge events, but the
 real TreeKV engine does not emit merges yet - KV dedup exists at the pool
 level and is not yet driven by the engine loop.) It is a fully offline page
 served by `autotree-serve` itself.
+
+## GPU serving
+
+On a Linux box with an NVIDIA GPU, install the same packages and start the
+server with a CUDA device. Drivers at CUDA 12.8 need the cu128 torch build
+(torch 2.12+ ships CUDA-13 wheels only):
+
+```bash
+uv pip install --index-url https://download.pytorch.org/whl/cu128 "torch==2.11.0+cu128"
+autotree serve --engine treekv --model Qwen/Qwen3-8B --device cuda --dtype bfloat16
+```
+
+Kernel parity, Qwen3-8B parity, and measured branch-scaling numbers from an
+A100 run are documented in `core/docs/a100-validation.md`.
 
 ## Packages
 

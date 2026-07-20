@@ -1,4 +1,4 @@
-# CPU TreeKV quickstart
+# TreeKV quickstart (CPU)
 
 <!-- markdownlint-disable MD013 -->
 
@@ -107,3 +107,10 @@ Stop the server with Ctrl+C.
 
 The repository does not currently include the blueprint's web playground.
 Use the HTTP response and streaming API as the live demo surfaces today.
+
+## GPU variant
+
+The same server runs real models on CUDA: install the cu128 torch build
+(`torch==2.11.0+cu128` from `https://download.pytorch.org/whl/cu128` on
+CUDA 12.8 drivers), then add `--device cuda --dtype bfloat16` to the serve
+command. Hardware validation evidence lives in `core/docs/a100-validation.md`.

@@ -14,6 +14,21 @@ const fixtureProvenanceSchema = strictObject({
   notice: z.literal(FIXTURE_NOTICE),
 });
 
+export const REAL_NOTICE =
+  "REAL TASKS - MEASURED RESULT. Claims are limited to the stated protocol scope.";
+
+const realProvenanceSchema = strictObject({
+  kind: z.literal("real"),
+  source: z.string().min(1),
+  license: z.string().min(1),
+  notice: z.literal(REAL_NOTICE),
+});
+
+const provenanceSchema = z.discriminatedUnion("kind", [
+  fixtureProvenanceSchema,
+  realProvenanceSchema,
+]);
+
 const pricingConfigSchema = strictObject({
   input_per_million_usd: z.number().nonnegative(),
   output_per_million_usd: z.number().nonnegative(),
@@ -146,7 +161,7 @@ const taskSetSchema = strictObject({
   name: z.string(),
   sha256: z.string().regex(/^[0-9a-f]{64}$/),
   task_count: z.number().int().min(1),
-  provenance: fixtureProvenanceSchema,
+  provenance: provenanceSchema,
 });
 
 const environmentSchema = strictObject({
@@ -160,8 +175,8 @@ const environmentSchema = strictObject({
 
 export const resultsDocumentSchema = strictObject({
   schema_version: z.literal(RESULTS_SCHEMA_VERSION),
-  artifact_notice: z.literal(FIXTURE_NOTICE),
-  benchmark_claims_allowed: z.literal(false),
+  artifact_notice: z.union([z.literal(FIXTURE_NOTICE), z.literal(REAL_NOTICE)]),
+  benchmark_claims_allowed: z.boolean(),
   run_id: z.string(),
   run_fingerprint: z.string().regex(/^[0-9a-f]{64}$/),
   engine_config: engineConfigSchema,
@@ -170,7 +185,19 @@ export const resultsDocumentSchema = strictObject({
   aggregate_metrics: z.array(aggregateMetricsSchema),
   samples: z.array(sampleResultSchema),
   environment: environmentSchema,
-});
+}).refine(
+  (document) =>
+    document.benchmark_claims_allowed ===
+      (document.task_set.provenance.kind === "real") &&
+    document.artifact_notice ===
+      (document.task_set.provenance.kind === "real"
+        ? REAL_NOTICE
+        : FIXTURE_NOTICE),
+  {
+    message:
+      "artifact_notice and benchmark_claims_allowed must match task-set provenance kind",
+  },
+);
 
 export type ResultsDocument = z.infer<typeof resultsDocumentSchema>;
 export type EngineMode = ResultsDocument["engine_config"]["mode"];
