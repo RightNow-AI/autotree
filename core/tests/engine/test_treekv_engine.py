@@ -251,6 +251,80 @@ class FinalizeAllScheduler:
         return commands
 
 
+class SharedBudgetScheduler:
+    """Fork once, then spend the shared budget in complete live-branch rounds."""
+
+    def __init__(self, config: dict[str, object]) -> None:
+        self.config = config
+        self._commands: deque[dict[str, object]] = deque()
+        self._states = {0: "active"}
+        self._live: set[int] = set()
+        self._round: set[int] = set()
+        self._tokens = 0
+
+    def feed_event(self, event: dict[str, object]) -> None:
+        event_type = event["type"]
+        branch_id = int(event["branch"])
+        if event_type == "branch_exhausted":
+            self._states[branch_id] = "finalized"
+            self._live.discard(branch_id)
+            self._round.discard(branch_id)
+            self._commands = deque(
+                command
+                for command in self._commands
+                if not (
+                    int(command["branch"]) == branch_id
+                    and command["type"] in {"continue", "finalize"}
+                )
+            )
+            return
+        if event_type != "token_sampled":
+            return
+
+        self._tokens += 1
+        if branch_id == 0:
+            branches = int(self.config["branches"])
+            self._states[0] = "expanded"
+            self._live = set(range(1, branches + 1))
+            self._states.update({child: "active" for child in self._live})
+            self._commands.extend(
+                [
+                    {"type": "fork_at", "branch": 0, "width": branches},
+                    *(
+                        {"type": "continue", "branch": child}
+                        for child in sorted(self._live)
+                    ),
+                ]
+            )
+            return
+
+        self._round.add(branch_id)
+        if self._round != self._live:
+            return
+        self._round.clear()
+        if self._tokens == int(self.config["budget_tokens"]):
+            for child in sorted(self._live):
+                self._states[child] = "finalized"
+                self._commands.append({"type": "finalize", "branch": child})
+            self._states[0] = "killed"
+            self._commands.append(
+                {"type": "kill", "branch": 0, "reason": "tree_budget_exhausted"}
+            )
+            return
+        self._commands.extend(
+            {"type": "continue", "branch": child}
+            for child in sorted(self._live)
+        )
+
+    def poll_commands(self) -> list[dict[str, object]]:
+        commands = list(self._commands)
+        self._commands.clear()
+        return commands
+
+    def branch_state(self, branch: int) -> str | None:
+        return self._states.get(branch)
+
+
 def request(*, budget_tokens: int = 3) -> GenerationRequest:
     return GenerationRequest(
         model="tiny-engine-model",
@@ -272,6 +346,52 @@ def request(*, budget_tokens: int = 3) -> GenerationRequest:
 
 async def collect(engine: TreeKVEngine, generation_request: GenerationRequest):
     return [event async for event in engine.generate(generation_request)]
+
+
+def emvpt_request(
+    *,
+    branches: int = 3,
+    budget_tokens: int,
+    check_interval: int = 4,
+    warmup_tokens: int = 8,
+    min_keep: int = 2,
+    scorer: str | None = None,
+) -> GenerationRequest:
+    return replace(
+        request(budget_tokens=budget_tokens),
+        max_tokens=32,
+        tree=TreeExecution(
+            policy="emvpt",
+            branches=branches,
+            budget_tokens=budget_tokens,
+            scorer=scorer,
+            value_check_interval=check_interval,
+            value_margin=0.35,
+            value_min_keep=min_keep,
+            value_warmup_tokens=warmup_tokens,
+        ),
+    )
+
+
+def scripted_branch_samples(
+    *,
+    branch_logprobs: tuple[float, ...],
+    rounds_before_prune: int,
+    survivor_ids: tuple[int, ...] = (),
+    survivor_rounds: int = 0,
+) -> list[tuple[int, float]]:
+    samples = [(10, -0.1)]
+    samples.extend(
+        (20 + branch_id, logprob)
+        for _ in range(rounds_before_prune)
+        for branch_id, logprob in enumerate(branch_logprobs, start=1)
+    )
+    samples.extend(
+        (20 + branch_id, branch_logprobs[branch_id - 1])
+        for _ in range(survivor_rounds)
+        for branch_id in survivor_ids
+    )
+    return samples
 
 
 @pytest.mark.parametrize(
@@ -307,6 +427,22 @@ def test_sample_reports_unscaled_model_logprob(
 def test_null_seed_resolves_to_documented_zero_default() -> None:
     assert TreeKVEngine._resolve_seed(None) == 0
     assert TreeKVEngine._resolve_seed(17) == 17
+
+
+def test_emvpt_uses_beam_scheduler_with_documented_defaults() -> None:
+    tree = TreeExecution(
+        policy="emvpt",
+        branches=3,
+        budget_tokens=64,
+        scorer=None,
+    )
+    generation_request = replace(request(), tree=tree)
+
+    assert tree.value_check_interval == 16
+    assert tree.value_margin == pytest.approx(0.35)
+    assert tree.value_min_keep == 2
+    assert tree.value_warmup_tokens == 8
+    assert TreeKVEngine._scheduler_config(generation_request)["policy"] == "beam"
 
 
 def test_fork_ids_events_and_kill_reclaim_real_tree_kv_pages(tiny_engine_case) -> None:
@@ -684,6 +820,302 @@ def test_self_consistency_selects_winner_at_exact_tree_budget(
 
     assert done.usage.completion_tokens == 4
     assert done.branch_id == "branch-2"
+
+
+def test_emvpt_prunes_weak_branch_at_first_eligible_check(
+    tiny_engine_case,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = TreeKVEngine(
+        model_id="tiny-engine-model",
+        executor=tiny_engine_case.executor,
+        tokenizer=tiny_engine_case.tokenizer,
+        scheduler_factory=SharedBudgetScheduler,
+    )
+    samples = iter(
+        scripted_branch_samples(
+            branch_logprobs=(-0.1, -0.2, -1.0),
+            rounds_before_prune=8,
+            survivor_ids=(1, 2),
+            survivor_rounds=2,
+        )
+    )
+    monkeypatch.setattr(
+        engine,
+        "_sample",
+        lambda _logits, _request, _generator: next(samples),
+    )
+
+    events = asyncio.run(collect(engine, emvpt_request(budget_tokens=29)))
+
+    value_prunes = [
+        event
+        for event in events
+        if isinstance(event, BranchPruned) and event.reason == "emvpt_below_margin"
+    ]
+    assert [event.branch_id for event in value_prunes] == ["branch-3"]
+    assert sum(
+        isinstance(event, TokenGenerated) and event.branch_id == "branch-3"
+        for event in events
+    ) == 8
+    assert any(
+        branch_id == 3 and after < before
+        for branch_id, before, after in tiny_engine_case.executor.prune_accounting
+    )
+    done = next(event for event in events if isinstance(event, GenerationDone))
+    assert done.tree_summary is not None
+    assert done.tree_summary.value_estimates["branch-3"] == pytest.approx(-1.0)
+    assert done.tree_summary.pruned_at_tokens["branch-3"] == 8
+
+
+def test_emvpt_respects_min_keep(
+    tiny_engine_case,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = TreeKVEngine(
+        model_id="tiny-engine-model",
+        executor=tiny_engine_case.executor,
+        tokenizer=tiny_engine_case.tokenizer,
+        scheduler_factory=SharedBudgetScheduler,
+    )
+    samples = iter(
+        scripted_branch_samples(
+            branch_logprobs=(-0.1, -1.0, -2.0),
+            rounds_before_prune=8,
+            survivor_ids=(1, 2),
+            survivor_rounds=2,
+        )
+    )
+    monkeypatch.setattr(
+        engine,
+        "_sample",
+        lambda _logits, _request, _generator: next(samples),
+    )
+
+    events = asyncio.run(collect(engine, emvpt_request(budget_tokens=29)))
+
+    value_prunes = [
+        event.branch_id
+        for event in events
+        if isinstance(event, BranchPruned) and event.reason == "emvpt_below_margin"
+    ]
+    assert value_prunes == ["branch-3"]
+    done = next(event for event in events if isinstance(event, GenerationDone))
+    assert done.tree_summary is not None
+    assert done.tree_summary.pruned_at_tokens == {
+        "branch-0": None,
+        "branch-1": None,
+        "branch-2": None,
+        "branch-3": 8,
+    }
+
+
+def test_emvpt_respects_warmup(
+    tiny_engine_case,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = TreeKVEngine(
+        model_id="tiny-engine-model",
+        executor=tiny_engine_case.executor,
+        tokenizer=tiny_engine_case.tokenizer,
+        scheduler_factory=SharedBudgetScheduler,
+    )
+    samples = iter(
+        scripted_branch_samples(
+            branch_logprobs=(-0.1, -0.2, -2.0),
+            rounds_before_prune=7,
+        )
+    )
+    monkeypatch.setattr(
+        engine,
+        "_sample",
+        lambda _logits, _request, _generator: next(samples),
+    )
+
+    events = asyncio.run(
+        collect(
+            engine,
+            emvpt_request(
+                budget_tokens=22,
+                check_interval=1,
+                warmup_tokens=8,
+            ),
+        )
+    )
+
+    assert not any(
+        isinstance(event, BranchPruned) and event.reason == "emvpt_below_margin"
+        for event in events
+    )
+    done = next(event for event in events if isinstance(event, GenerationDone))
+    assert done.tree_summary is not None
+    assert all(value is None for value in done.tree_summary.pruned_at_tokens.values())
+
+
+def test_emvpt_reuses_pruned_branch_budget_for_survivors(
+    tiny_engine_case,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = TreeKVEngine(
+        model_id="tiny-engine-model",
+        executor=tiny_engine_case.executor,
+        tokenizer=tiny_engine_case.tokenizer,
+        scheduler_factory=SharedBudgetScheduler,
+    )
+    samples = iter(
+        scripted_branch_samples(
+            branch_logprobs=(-0.1, -0.2, -1.0),
+            rounds_before_prune=8,
+            survivor_ids=(1, 2),
+            survivor_rounds=2,
+        )
+    )
+    monkeypatch.setattr(
+        engine,
+        "_sample",
+        lambda _logits, _request, _generator: next(samples),
+    )
+
+    events = asyncio.run(collect(engine, emvpt_request(budget_tokens=29)))
+
+    done = next(event for event in events if isinstance(event, GenerationDone))
+    assert done.usage.completion_tokens == 29
+    assert done.tree_summary is not None
+    assert done.tree_summary.tokens_spent_per_branch == {
+        "branch-0": 1,
+        "branch-1": 10,
+        "branch-2": 10,
+        "branch-3": 8,
+    }
+
+
+def test_default_policy_does_not_enable_value_pruning(
+    tiny_engine_case,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = TreeKVEngine(
+        model_id="tiny-engine-model",
+        executor=tiny_engine_case.executor,
+        tokenizer=tiny_engine_case.tokenizer,
+        scheduler_factory=SharedBudgetScheduler,
+    )
+    samples = iter(
+        scripted_branch_samples(
+            branch_logprobs=(-0.1, -0.2, -2.0),
+            rounds_before_prune=2,
+        )
+    )
+    monkeypatch.setattr(
+        engine,
+        "_sample",
+        lambda _logits, _request, _generator: next(samples),
+    )
+    generation_request = replace(
+        request(budget_tokens=7),
+        max_tokens=32,
+        tree=TreeExecution(
+            policy="beam",
+            branches=3,
+            budget_tokens=7,
+            scorer=None,
+        ),
+    )
+
+    events = asyncio.run(collect(engine, generation_request))
+
+    assert not any(
+        isinstance(event, BranchPruned) and event.reason == "emvpt_below_margin"
+        for event in events
+    )
+    done = next(event for event in events if isinstance(event, GenerationDone))
+    assert done.tree_summary is not None
+    assert done.tree_summary.value_estimates is None
+    assert done.tree_summary.pruned_at_tokens is None
+    assert "value_estimates" not in done.tree_summary.to_dict()
+    assert "pruned_at_tokens" not in done.tree_summary.to_dict()
+
+
+def test_emvpt_self_consistency_votes_only_among_survivors(
+    tiny_engine_case,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = TreeKVEngine(
+        model_id="tiny-engine-model",
+        executor=tiny_engine_case.executor,
+        tokenizer=tiny_engine_case.tokenizer,
+        scheduler_factory=SharedBudgetScheduler,
+    )
+    samples = iter(
+        [
+            (10, -0.1),
+            (21, -0.1),
+            (22, -0.2),
+            (23, -0.05),
+            (24, -2.0),
+            (31, -0.1),
+            (32, -0.2),
+            (33, -0.05),
+            (34, -2.0),
+            (41, -0.1),
+            (42, -0.2),
+            (43, -0.05),
+            (51, -0.1),
+            (52, -0.2),
+            (53, -0.05),
+        ]
+    )
+    decoded = {
+        10: "Reasoning. ",
+        21: "work ",
+        22: "work ",
+        23: "work ",
+        24: "work ",
+        31: "work ",
+        32: "work ",
+        33: "work ",
+        34: "work ",
+        41: "Answer: 7. ",
+        42: "Answer: 7. ",
+        43: "Answer: 9. ",
+        51: "done",
+        52: "done",
+        53: "done",
+    }
+    monkeypatch.setattr(
+        engine,
+        "_sample",
+        lambda _logits, _request, _generator: next(samples),
+    )
+    monkeypatch.setattr(
+        tiny_engine_case.tokenizer,
+        "decode",
+        lambda token_ids, **_kwargs: decoded[token_ids[0]],
+    )
+
+    events = asyncio.run(
+        collect(
+            engine,
+            emvpt_request(
+                branches=4,
+                budget_tokens=15,
+                check_interval=2,
+                warmup_tokens=2,
+                scorer="self_consistency",
+            ),
+        )
+    )
+
+    assert any(
+        isinstance(event, BranchPruned)
+        and event.branch_id == "branch-4"
+        and event.reason == "emvpt_below_margin"
+        for event in events
+    )
+    done = next(event for event in events if isinstance(event, GenerationDone))
+    assert done.branch_id == "branch-1"
+    assert done.text.endswith("Answer: 7. done")
+    assert done.tree_summary is not None
+    assert done.tree_summary.scorer == "self_consistency"
 
 
 def test_engine_rejects_unknown_scorer(tiny_engine_case) -> None:

@@ -24,10 +24,14 @@ class Message:
 
 @dataclass(frozen=True, slots=True)
 class TreeExecution:
-    policy: Literal["beam", "best_first", "mcts"]
+    policy: Literal["beam", "best_first", "mcts", "emvpt"]
     branches: int
     budget_tokens: int
     scorer: str | None
+    value_check_interval: int = 16
+    value_margin: float = 0.35
+    value_min_keep: int = 2
+    value_warmup_tokens: int = 8
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,9 +128,16 @@ class TreeSummary:
     final_scores: dict[str, float]
     scorer: str | None
     kv_reuse_ratio: float = 1.0
+    value_estimates: dict[str, float | None] | None = None
+    pruned_at_tokens: dict[str, int | None] | None = None
 
     def to_dict(self) -> dict[str, object]:
-        return asdict(self)
+        payload = asdict(self)
+        if self.value_estimates is None:
+            payload.pop("value_estimates")
+        if self.pruned_at_tokens is None:
+            payload.pop("pruned_at_tokens")
+        return payload
 
 
 @dataclass(frozen=True, slots=True)

@@ -53,6 +53,14 @@ class _KVSnapshot:
         return self.logical_tokens / max(self.physical_tokens, 1)
 
 
+@dataclass(frozen=True, slots=True)
+class _EMVPTConfig:
+    check_interval: int
+    margin: float
+    min_keep: int
+    warmup_tokens: int
+
+
 _ENGINE_DTYPES = {
     "float32": torch.float32,
     "bfloat16": torch.bfloat16,
@@ -125,7 +133,7 @@ class TreeKVEngine:
                 "the Rust branch scheduler; no GPU throughput claim is implied."
             ),
             real_model_weights=True,
-            tree_policies=("beam", "best_first", "mcts"),
+            tree_policies=("beam", "best_first", "mcts", "emvpt"),
         )
 
     @property
@@ -154,6 +162,7 @@ class TreeKVEngine:
             execution = self.executor.prefill(prompt_ids)
         except KVCapacityError as error:
             raise self._capacity_error("admission", error) from error
+        emvpt_config = self._emvpt_config(request)
         scheduler = self._scheduler_factory(self._scheduler_config(request))
         generator = torch.Generator(device=self.executor.config.device).manual_seed(
             self._resolve_seed(request.seed)
@@ -165,9 +174,13 @@ class TreeKVEngine:
         token_counts: dict[int, int] = {execution.root_id: 0}
         ranking_token_counts: dict[int, int] = {execution.root_id: 0}
         scores: dict[int, float] = {execution.root_id: 0.0}
+        value_logprob_sums: dict[int, float] = {execution.root_id: 0.0}
+        value_token_counts: dict[int, int] = {execution.root_id: 0}
+        pruned_at_tokens: dict[int, int | None] = {execution.root_id: None}
         active = {execution.root_id}
         finalized: set[int] = set()
         merged: set[int] = set()
+        value_pruned: set[int] = set()
         exhaustion_pending: set[int] = set()
         stopped: set[int] = set()
         commands: deque[dict[str, object]] = deque()
@@ -189,6 +202,76 @@ class TreeKVEngine:
         def scheduler_branch_is_active(branch_id: int) -> bool:
             state = scheduler_branch_state(branch_id)
             return state is None or state == "active"
+
+        def value_estimate(branch_id: int) -> float | None:
+            count = value_token_counts[branch_id]
+            if count == 0:
+                return None
+            return value_logprob_sums[branch_id] / count
+
+        def prune_low_value_branches() -> tuple[BranchPruned, ...]:
+            nonlocal pruned_count
+            if emvpt_config is None:
+                return ()
+
+            live = [
+                branch_id
+                for branch_id in sorted(active)
+                if branch_id not in exhaustion_pending
+                and scheduler_branch_is_active(branch_id)
+            ]
+            available_prunes = len(live) - emvpt_config.min_keep
+            if available_prunes <= 0:
+                return ()
+
+            sibling_groups: dict[int | None, list[int]] = {}
+            for branch_id in live:
+                sibling_groups.setdefault(parents[branch_id], []).append(branch_id)
+
+            candidates: list[tuple[float, int]] = []
+            for siblings in sibling_groups.values():
+                estimates = {
+                    branch_id: value_estimate(branch_id) for branch_id in siblings
+                }
+                finite_estimates = {
+                    branch_id: estimate
+                    for branch_id, estimate in estimates.items()
+                    if estimate is not None
+                }
+                if len(finite_estimates) < 2:
+                    continue
+                best = max(finite_estimates.values())
+                for branch_id, estimate in finite_estimates.items():
+                    count = value_token_counts[branch_id]
+                    if (
+                        count >= emvpt_config.warmup_tokens
+                        and count % emvpt_config.check_interval == 0
+                        and best - estimate > emvpt_config.margin
+                    ):
+                        candidates.append((best - estimate, branch_id))
+
+            candidates.sort(key=lambda item: (-item[0], item[1]))
+            events: list[BranchPruned] = []
+            for _, branch_id in candidates[:available_prunes]:
+                if branch_id not in active:
+                    continue
+                active.remove(branch_id)
+                exhaustion_pending.discard(branch_id)
+                self.executor.prune(execution, branch_id)
+                value_pruned.add(branch_id)
+                pruned_at_tokens[branch_id] = value_token_counts[branch_id]
+                pruned_count += 1
+                if scheduler_branch_is_active(branch_id):
+                    scheduler.feed_event(
+                        {"type": "branch_exhausted", "branch": branch_id}
+                    )
+                events.append(
+                    BranchPruned(
+                        branch_id=self._branch_name(branch_id),
+                        reason="emvpt_below_margin",
+                    )
+                )
+            return tuple(events)
 
         def merge_converged_branches(
             pending_commands: tuple[dict[str, object], ...],
@@ -260,7 +343,9 @@ class TreeKVEngine:
 
         async def advance_batch(
             branch_ids: tuple[int, ...],
-        ) -> tuple[tuple[TokenGenerated, ...], tuple[BranchMerged, ...]]:
+        ) -> tuple[
+            tuple[TokenGenerated | BranchPruned, ...], tuple[BranchMerged, ...]
+        ]:
             nonlocal completion_tokens, decode_steps, first_token_at, best_snapshot
             if not branch_ids or len(set(branch_ids)) != len(branch_ids):
                 raise RuntimeError(
@@ -303,6 +388,8 @@ class TreeKVEngine:
                 own_text[branch_id].append(token)
                 path_text[branch_id] += token
                 scores[branch_id] += logprob
+                value_logprob_sums[branch_id] += logprob
+                value_token_counts[branch_id] += 1
                 completion_tokens += 1
                 branch_exhausted = self._token_exhausts_branch(
                     token_id, path_text[branch_id], request
@@ -337,6 +424,7 @@ class TreeKVEngine:
             unique_tokens_per_step.append(
                 len({execution.token_ids(branch_id) for branch_id in branch_ids})
             )
+            value_prune_events = prune_low_value_branches()
             scheduler_commands = tuple(scheduler.poll_commands())
             merge_events: tuple[BranchMerged, ...] = ()
             if (
@@ -354,7 +442,7 @@ class TreeKVEngine:
                 best_snapshot, self._snapshot(execution)
             )
             await asyncio.sleep(0)
-            return tuple(events), merge_events
+            return (*events, *value_prune_events), merge_events
 
         token_events, merge_events = await advance_batch((execution.root_id,))
         for event in (*token_events, *merge_events):
@@ -364,7 +452,7 @@ class TreeKVEngine:
             command = commands.popleft()
             command_type = str(command.get("type"))
             branch_id = int(command["branch"])
-            if branch_id in merged:
+            if branch_id in merged or branch_id in value_pruned:
                 continue
             if command_type == "continue":
                 continue_ids = [branch_id]
@@ -410,6 +498,9 @@ class TreeKVEngine:
                     token_counts[child_id] = 0
                     ranking_token_counts[child_id] = ranking_token_counts[branch_id]
                     scores[child_id] = scores[branch_id]
+                    value_logprob_sums[child_id] = 0.0
+                    value_token_counts[child_id] = 0
+                    pruned_at_tokens[child_id] = None
                     active.add(child_id)
                     if children_are_exhausted:
                         exhaustion_pending.add(child_id)
@@ -493,6 +584,22 @@ class TreeKVEngine:
                 },
                 scorer=request.tree.scorer,
                 kv_reuse_ratio=best_snapshot.ratio,
+                value_estimates=(
+                    {
+                        self._branch_name(branch_id): value_estimate(branch_id)
+                        for branch_id in sorted(parents)
+                    }
+                    if emvpt_config is not None
+                    else None
+                ),
+                pruned_at_tokens=(
+                    {
+                        self._branch_name(branch_id): pruned_at_tokens[branch_id]
+                        for branch_id in sorted(parents)
+                    }
+                    if emvpt_config is not None
+                    else None
+                ),
             )
         yield GenerationDone(
             branch_id=self._branch_name(winner),
@@ -621,10 +728,50 @@ class TreeKVEngine:
             is_eos = False
         return is_eos or any(stop and stop in text for stop in request.stop)
 
+    @staticmethod
+    def _emvpt_config(request: GenerationRequest) -> _EMVPTConfig | None:
+        tree = request.tree
+        if tree is None or tree.policy != "emvpt":
+            return None
+        if (
+            isinstance(tree.value_check_interval, bool)
+            or not isinstance(tree.value_check_interval, int)
+            or tree.value_check_interval <= 0
+        ):
+            raise ValueError("value_check_interval must be a positive integer")
+        if (
+            isinstance(tree.value_margin, bool)
+            or not isinstance(tree.value_margin, (int, float))
+            or not math.isfinite(tree.value_margin)
+            or tree.value_margin < 0
+        ):
+            raise ValueError("value_margin must be finite and non-negative")
+        if (
+            isinstance(tree.value_min_keep, bool)
+            or not isinstance(tree.value_min_keep, int)
+            or tree.value_min_keep <= 0
+        ):
+            raise ValueError("value_min_keep must be a positive integer")
+        if (
+            isinstance(tree.value_warmup_tokens, bool)
+            or not isinstance(tree.value_warmup_tokens, int)
+            or tree.value_warmup_tokens < 0
+        ):
+            raise ValueError("value_warmup_tokens must be a non-negative integer")
+        return _EMVPTConfig(
+            check_interval=tree.value_check_interval,
+            margin=float(tree.value_margin),
+            min_keep=tree.value_min_keep,
+            warmup_tokens=tree.value_warmup_tokens,
+        )
+
     @classmethod
     def _scheduler_config(cls, request: GenerationRequest) -> dict[str, object]:
         tree = request.tree
-        policy = tree.policy.replace("_", "-") if tree else "beam"
+        if tree is None or tree.policy == "emvpt":
+            policy = "beam"
+        else:
+            policy = tree.policy.replace("_", "-")
         requested_scorer = tree.scorer if tree else None
         if requested_scorer not in {None, "logprob", "self_consistency"}:
             raise ValueError(
