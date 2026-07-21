@@ -7,9 +7,11 @@ from .errors import (
     SSEParseError,
     TraceInvariantError,
     TreeHTTPError,
+    TreeNotSupportedError,
     TreeStreamError,
 )
 from .models import (
+    BranchStats,
     BranchMergedEvent,
     BranchPrunedEvent,
     BranchStartedEvent,
@@ -22,6 +24,7 @@ from .models import (
     RolloutTree,
     StreamErrorDetails,
     TokenEvent,
+    TreeCompletion,
     TreeCompletionResponse,
     TreeParameters,
     TreeSummary,
@@ -32,6 +35,7 @@ from .trace import TraceAssembler
 
 __all__ = [
     "AutoTreeError",
+    "BranchStats",
     "BranchMergedEvent",
     "BranchPrunedEvent",
     "BranchStartedEvent",
@@ -49,8 +53,10 @@ __all__ = [
     "TraceAssembler",
     "TraceInvariantError",
     "TreeClient",
+    "TreeCompletion",
     "TreeCompletionResponse",
     "TreeHTTPError",
+    "TreeNotSupportedError",
     "TreeParameters",
     "TreeStreamError",
     "TreeSummary",

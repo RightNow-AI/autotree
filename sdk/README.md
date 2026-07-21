@@ -14,32 +14,26 @@ uv run pytest -q
 The distribution name in this lane is `autotree-sdk`; the import module is
 `autotree_sdk`.
 
-## Typed tree client
+## First-class tree completions
 
 ```python
-from autotree_sdk import TreeClient, TreeParameters
-
-tree = TreeParameters(
-    policy="beam",
-    branches=8,
-    budget_tokens=4000,
-    scorer=None,
-)
-
+from autotree_sdk import TreeClient
 with TreeClient("http://localhost:8000") as client:
-    response = client.tree_completions(
-        model="Qwen3-32B",
+    result = client.tree_completions(
         messages=[{"role": "user", "content": "Solve the problem."}],
-        tree=tree,
+        model="Qwen3-32B",
+        branches=4,
+        budget_tokens=1024,
+        temperature=0.2,
     )
-
-    for event in client.stream_tree_completions(
-        model="Qwen3-32B",
-        messages=[{"role": "user", "content": "Solve the problem."}],
-        tree=tree,
-    ):
-        print(event.type)
+print(result.text, result.branches[result.winner_branch_id].final_score)
 ```
+
+`tree_completions(...)` targets `/v1/tree/completions`, builds the exact tree
+request envelope, and returns a typed `TreeCompletion`. Each entry in
+`result.branches` contains its token spend and final score. Stock SGLang
+servers that return 404 raise `TreeNotSupportedError` with guidance to use the
+AutoTree fork.
 
 `TreeClient.completions(...)` targets `/v1/chat/completions` and passes the
 same optional `tree` extension. Streaming methods decode SSE across arbitrary

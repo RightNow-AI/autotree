@@ -88,6 +88,12 @@ class MockAutoTreeASGI:
         if payload.get("scenario") == "http_error":
             await self._json(send, 503, {"error": {"message": "capacity unavailable"}})
             return
+        if (
+            payload.get("scenario") == "tree_not_supported"
+            and scope["path"] == "/v1/tree/completions"
+        ):
+            await self._json(send, 404, {"error": "not found"})
+            return
         if scope["path"] == "/v1/chat/completions":
             if payload.get("stream"):
                 await self._chat_stream(payload, send)
@@ -124,6 +130,13 @@ class MockAutoTreeASGI:
         )
 
     async def _tree_response(self, payload, send) -> None:
+        summary = self._summary(
+            payload,
+            {"root": 2, "alternate": 1},
+            {"root": 0.9, "alternate": 0.25},
+        )
+        if payload.get("scenario") == "null_kv_reuse":
+            summary["kv_reuse_ratio"] = None
         await self._json(
             send,
             200,
@@ -139,7 +152,7 @@ class MockAutoTreeASGI:
                     }
                 ],
                 "usage": {"prompt_tokens": 2, "completion_tokens": 2, "total_tokens": 4},
-                "tree": self._summary(payload, {"root": 2}, {"root": 0.9}),
+                "tree": summary,
             },
         )
 

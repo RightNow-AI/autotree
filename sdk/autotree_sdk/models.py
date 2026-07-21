@@ -22,8 +22,11 @@ Prompt: TypeAlias = str | list[dict[str, Any]]
 NonNegativeInt: TypeAlias = Annotated[int, Field(ge=0)]
 
 
+# matches tree-engine serving_tree.py envelope
 class TreeParameters(BaseModel):
     """Tree-search controls accepted by AutoTree serving endpoints."""
+
+    model_config = ConfigDict(extra="forbid")
 
     policy: TreePolicy = "beam"
     branches: int = Field(gt=0)
@@ -47,12 +50,13 @@ class Usage(BaseModel):
         return self
 
 
+# matches tree-engine serving_tree.py envelope
 class TreeSummary(BaseModel):
     """Server summary for a completed tree execution."""
 
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
-    policy: str
+    policy: TreePolicy
     branch_count: int = Field(ge=1)
     pruned_count: int = Field(ge=0)
     merged_count: int = Field(ge=0)
@@ -60,7 +64,20 @@ class TreeSummary(BaseModel):
     tokens_spent_per_branch: dict[str, NonNegativeInt]
     final_scores: dict[str, float]
     scorer: str | None
-    kv_reuse_ratio: float = Field(ge=1)
+    kv_reuse_ratio: float | None = Field(ge=1)
+
+    @model_validator(mode="after")
+    def validate_branches(self) -> "TreeSummary":
+        branch_ids = set(self.tokens_spent_per_branch)
+        if set(self.final_scores) != branch_ids:
+            raise ValueError(
+                "final_scores and tokens_spent_per_branch must use the same branch IDs"
+            )
+        if len(branch_ids) != self.branch_count:
+            raise ValueError("branch_count must match the per-branch maps")
+        if self.winner_branch_id not in branch_ids:
+            raise ValueError("winner_branch_id must identify a reported branch")
+        return self
 
 
 class ChatMessage(BaseModel):
@@ -93,9 +110,51 @@ class ChatCompletionResponse(BaseModel):
 
 
 class TreeCompletionResponse(ChatCompletionResponse):
-    """Winning completion plus the required tree summary."""
+    """Exact non-stream tree endpoint wire response."""
 
+    choices: list[CompletionChoice] = Field(min_length=1)
+    usage: Usage
     tree: TreeSummary
+
+
+class BranchStats(BaseModel):
+    """Token spend and terminal score for one explored branch."""
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    tokens_spent: NonNegativeInt
+    final_score: float
+
+
+class TreeCompletion(BaseModel):
+    """Convenient typed result returned by ``TreeClient.tree_completions``."""
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    text: str
+    winner_branch_id: str
+    branches: dict[str, BranchStats]
+    pruned_count: NonNegativeInt
+    scorer: str | None
+    usage: Usage
+
+    @classmethod
+    def from_response(cls, response: TreeCompletionResponse) -> "TreeCompletion":
+        summary = response.tree
+        return cls(
+            text=response.choices[0].message.content,
+            winner_branch_id=summary.winner_branch_id,
+            branches={
+                branch_id: BranchStats(
+                    tokens_spent=tokens_spent,
+                    final_score=summary.final_scores[branch_id],
+                )
+                for branch_id, tokens_spent in summary.tokens_spent_per_branch.items()
+            },
+            pruned_count=summary.pruned_count,
+            scorer=summary.scorer,
+            usage=response.usage,
+        )
 
 
 class TreeEventModel(BaseModel):
