@@ -11,6 +11,13 @@ from .harness import dry_run_requests, load_harness_config, run_harness
 from .report import render_report
 
 
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return parsed
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="thoughtbench")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -20,6 +27,11 @@ def _parser() -> argparse.ArgumentParser:
         "--dry-run",
         action="store_true",
         help="print exact request URLs and JSON bodies without network access",
+    )
+    run.add_argument(
+        "--limit",
+        type=_positive_int,
+        help="run only the first N tasks (useful for smoke tests)",
     )
     aggregate = commands.add_parser("aggregate", help="merge result files into a leaderboard")
     aggregate.add_argument("source", type=Path)
@@ -34,10 +46,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "run":
         config = load_harness_config(args.config)
         if args.dry_run:
-            for request in dry_run_requests(config):
+            for request in dry_run_requests(config, limit=args.limit):
                 print(json.dumps(request, sort_keys=True))
             return 0
-        results, path = run_harness(config)
+        results, path = run_harness(config, limit=args.limit)
         print(f"wrote {path} ({len(results.tasks)} task executions)")
         return 0
     if args.command == "aggregate":
