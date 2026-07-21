@@ -199,7 +199,7 @@ class TraceAssembler:
         expected_kv_reuse_ratio = (
             event.counters.logical_tokens / event.counters.physical_tokens
         )
-        if not math.isclose(
+        if event.tree.kv_reuse_ratio is not None and not math.isclose(
             event.tree.kv_reuse_ratio,
             expected_kv_reuse_ratio,
             rel_tol=1e-9,

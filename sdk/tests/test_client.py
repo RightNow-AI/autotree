@@ -9,6 +9,7 @@ from autotree_sdk import (
     SSEParseError,
     TraceInvariantError,
     TreeHTTPError,
+    TreeNotSupportedError,
     TreeParameters,
     TreeStreamError,
 )
@@ -44,14 +45,73 @@ def test_chat_completions_passes_tree_extension(tree_client, mock_app) -> None:
     }
 
 
-def test_tree_completions_returns_typed_response(tree_client) -> None:
+def test_tree_completions_sends_exact_request_and_returns_typed_result(
+    tree_client, mock_app
+) -> None:
     response = tree_client.tree_completions(
-        messages=[{"role": "user", "content": "question"}], tree=TREE
+        messages=[{"role": "user", "content": "question"}],
+        model="test-model",
+        branches=2,
+        budget_tokens=64,
+        policy="best_first",
+        scorer="reward-head-v1",
+        temperature=0.2,
     )
 
-    assert response.choices[0].message.content == "answer"
-    assert response.tree.branch_count == 1
-    assert response.tree.final_scores == {"root": 0.9}
+    assert response.text == "answer"
+    assert response.winner_branch_id == "root"
+    assert response.branches["root"].tokens_spent == 2
+    assert response.branches["root"].final_score == 0.9
+    assert response.branches["alternate"].tokens_spent == 1
+    assert response.pruned_count == 0
+    assert response.scorer == "reward-head-v1"
+    assert response.usage.total_tokens == 4
+    assert mock_app.requests[-1] == {
+        "path": "/v1/tree/completions",
+        "body": {
+            "messages": [{"role": "user", "content": "question"}],
+            "temperature": 0.2,
+            "stream": False,
+            "model": "test-model",
+            "tree": {
+                "policy": "best_first",
+                "branches": 2,
+                "budget_tokens": 64,
+                "scorer": "reward-head-v1",
+            },
+        },
+    }
+
+
+def test_tree_completions_applies_defaults_and_accepts_null_kv_reuse_ratio(
+    tree_client, mock_app
+) -> None:
+    response = tree_client.tree_completions(
+        messages=[{"role": "user", "content": "question"}],
+        model="test-model",
+        budget_tokens=32,
+        scenario="null_kv_reuse",
+    )
+
+    assert response.text == "answer"
+    assert mock_app.requests[-1]["body"]["tree"] == {
+        "policy": "beam",
+        "branches": 4,
+        "budget_tokens": 32,
+        "scorer": None,
+    }
+
+
+def test_tree_completions_404_raises_not_supported_error(tree_client) -> None:
+    with pytest.raises(TreeNotSupportedError, match="AutoTree fork") as exc_info:
+        tree_client.tree_completions(
+            messages=[{"role": "user", "content": "question"}],
+            model="test-model",
+            budget_tokens=32,
+            scenario="tree_not_supported",
+        )
+
+    assert exc_info.value.status_code == 404
 
 
 def test_chat_completions_stream_is_sse_passthrough(tree_client, mock_app) -> None:
@@ -158,7 +218,8 @@ def test_failed_post_is_not_retried(tree_client, mock_app) -> None:
     with pytest.raises(TreeHTTPError, match="HTTP 503"):
         tree_client.tree_completions(
             messages=[{"role": "user", "content": "question"}],
-            tree=TREE,
+            model="test-model",
+            budget_tokens=32,
             scenario="http_error",
         )
 

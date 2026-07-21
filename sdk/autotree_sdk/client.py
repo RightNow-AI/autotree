@@ -9,12 +9,14 @@ from typing import Any, Literal, overload
 import httpx
 from pydantic import ValidationError
 
-from .errors import SSEParseError, TreeHTTPError
+from .errors import SSEParseError, TreeHTTPError, TreeNotSupportedError
 from .models import (
     ChatCompletionResponse,
+    TreeCompletion,
     TreeCompletionResponse,
     TreeEvent,
     TreeParameters,
+    TreePolicy,
     parse_tree_event,
 )
 from .sse import decode_sse_json, iter_sse_data
@@ -89,16 +91,29 @@ class TreeClient:
         self,
         *,
         messages: Sequence[Mapping[str, Any]],
-        tree: TreeParameters | Mapping[str, Any],
-        model: str | None = None,
-        **parameters: Any,
-    ) -> TreeCompletionResponse:
-        """Call the non-stream ``/v1/tree/completions`` endpoint."""
+        model: str,
+        branches: int = 4,
+        budget_tokens: int,
+        policy: TreePolicy = "beam",
+        scorer: str | None = None,
+        **sampling: Any,
+    ) -> TreeCompletion:
+        """Run first-class tree completion without hand-built ``extra_body``."""
 
-        body = self._body(messages, model, False, tree, parameters)
+        tree = TreeParameters(
+            policy=policy,
+            branches=branches,
+            budget_tokens=budget_tokens,
+            scorer=scorer,
+        )
+        body = self._body(messages, model, False, tree, sampling)
         response = self._client.post(self._url("/v1/tree/completions"), json=body)
-        self._raise_for_status(response)
-        return self._parse_response(response, TreeCompletionResponse)
+        self._raise_for_status(response, tree_endpoint=True)
+        wire_response = self._parse_response(response, TreeCompletionResponse)
+        try:
+            return TreeCompletion.from_response(wire_response)
+        except ValidationError as exc:
+            raise SSEParseError("invalid_response", str(exc)) from exc
 
     def stream_tree_completions(
         self,
@@ -115,7 +130,7 @@ class TreeClient:
         with self._client.stream(
             "POST", self._url("/v1/tree/completions"), json=body
         ) as response:
-            self._raise_for_status(response)
+            self._raise_for_status(response, tree_endpoint=True)
             for payload in iter_sse_data(response):
                 event = parse_tree_event(decode_sse_json(payload))
                 assembler.add(event)
@@ -154,9 +169,13 @@ class TreeClient:
         return body
 
     @staticmethod
-    def _raise_for_status(response: httpx.Response) -> None:
+    def _raise_for_status(
+        response: httpx.Response, *, tree_endpoint: bool = False
+    ) -> None:
         if response.is_success:
             return
+        if tree_endpoint and response.status_code == 404:
+            raise TreeNotSupportedError()
         try:
             body = response.json()
             detail = body.get("error", body) if isinstance(body, dict) else body

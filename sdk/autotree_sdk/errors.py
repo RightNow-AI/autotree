@@ -14,6 +14,17 @@ class TreeHTTPError(AutoTreeError):
         super().__init__(f"HTTP {status_code}: {detail}")
 
 
+class TreeNotSupportedError(TreeHTTPError):
+    """The server does not expose AutoTree's tree-completions endpoint."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            404,
+            "/v1/tree/completions is unavailable; use the AutoTree fork "
+            "instead of stock SGLang",
+        )
+
+
 class SSEParseError(AutoTreeError):
     """An SSE frame or typed event could not be parsed."""
 
