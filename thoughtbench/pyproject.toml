@@ -5,12 +5,16 @@ build-backend = "hatchling.build"
 [project]
 name = "thoughtbench"
 version = "0.1.0"
-description = "Fixture-first benchmark harness for AutoTree"
+description = "Honest OpenAI-compatible benchmark harness for AutoTree and baselines"
+readme = "README.md"
 requires-python = ">=3.12"
+license = "Apache-2.0"
 dependencies = [
   "autotree-sdk",
+  "httpx>=0.28,<1",
   "jsonschema>=4.23,<5",
   "pydantic>=2.10,<3",
+  "pyyaml>=6.0,<7",
 ]
 
 [project.scripts]

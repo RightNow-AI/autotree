@@ -90,7 +90,7 @@ pin `torch==2.11.0+cu128` as shown or CUDA is silently unavailable.
 | `scheduler/` | Rust beam, best-first, and MCTS policies with budget enforcement; PyO3 bindings |
 | `serve/` | `autotree` CLI, OpenAI-style endpoints, SSE streaming, Prometheus metrics, playground |
 | `sdk/` | Typed Python client and rollout-trace exports for RL pipelines |
-| `thoughtbench/` | Benchmark harness with provenance-labeled fixture and real task sets |
+| [`thoughtbench/`](thoughtbench/README.md) | Benchmark harness for single, best-of-n, and tree endpoint comparisons |
 | `figures/` | Publication figure pipeline; regenerates every chart from results JSON |
 | `deploy/`, `grafana/` | Helm chart, plain manifests, SLURM templates, dashboard pack |
 

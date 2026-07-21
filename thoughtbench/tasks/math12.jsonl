@@ -1,0 +1,12 @@
+{"id":"train-150","prompt":"A train travels 150 miles in 3 hours at a constant speed. What is its speed in miles per hour?","gold":"50"}
+{"id":"solve-linear-6","prompt":"Solve for x: 3x + 7 = 25.","gold":"6"}
+{"id":"rectangle-perimeter-34","prompt":"A rectangle is 10 units long and 7 units wide. What is its perimeter?","gold":"34"}
+{"id":"percent-36","prompt":"What is 15 percent of 240?","gold":"36"}
+{"id":"apples-18","prompt":"A basket starts with 30 apples. Twelve apples are given away. How many apples remain?","gold":"18"}
+{"id":"sum-55","prompt":"What is the sum of the first ten positive integers, from 1 through 10?","gold":"55"}
+{"id":"pizza-2","prompt":"Each pizza is cut into 8 equal slices. If 16 people each eat one slice, how many whole pizzas are needed?","gold":"2"}
+{"id":"shirt-50","prompt":"A shirt costs 40 dollars after a 20 percent discount. What was its original price in dollars?","gold":"50"}
+{"id":"factorial-ratio-42","prompt":"Evaluate 7! divided by 5!.","gold":"42"}
+{"id":"fuel-20","prompt":"A car uses 5 gallons of fuel for every 100 miles. How many gallons will it use to travel 400 miles?","gold":"20"}
+{"id":"power-6","prompt":"Solve for the integer n: 2^n = 64.","gold":"6"}
+{"id":"average-18","prompt":"What is the arithmetic mean of 12, 18, and 24?","gold":"18"}

@@ -66,7 +66,7 @@ def deterministic_server():
 
 def _config(tmp_path: Path, base_url: str, mode: str) -> RunConfig:
     fixture_path = Path(__file__).parents[1] / "fixtures" / "tasks.jsonl"
-    tree = TreeConfig(policy="beam", branches=3, scorer="fixture") if mode == "tree" else None
+    tree = TreeConfig(policy="beam", branches=3, scorer="logprob") if mode == "tree" else None
     budget = BudgetConfig(
         name="tiny",
         max_tokens=4,
