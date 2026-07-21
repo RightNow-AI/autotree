@@ -119,10 +119,23 @@ def _request_specs(tasks: list[BenchTask], seeds: list[int]) -> list[tuple[int, 
     ]
 
 
-def dry_run_requests(config: HarnessConfig) -> list[dict[str, Any]]:
+def _limit_tasks(tasks: list[BenchTask], limit: int | None) -> list[BenchTask]:
+    if limit is None:
+        return tasks
+    if limit < 1:
+        raise ValueError("limit must be at least 1")
+    return tasks[:limit]
+
+
+def dry_run_requests(
+    config: HarnessConfig,
+    *,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
     """Return every exact request body without opening a network connection."""
 
     tasks, _digest = load_bench_tasks(config.task_file)
+    tasks = _limit_tasks(tasks, limit)
     return [
         {
             "task_id": task.id,
@@ -165,12 +178,18 @@ def _execute_task(
     )
 
 
-def _params(config: HarnessConfig, task_sha256: str, task_count: int) -> dict[str, Any]:
+def _params(
+    config: HarnessConfig,
+    task_sha256: str,
+    task_count: int,
+    limit: int | None,
+) -> dict[str, Any]:
     return {
         "label": config.label,
         "task_file": config.task_file.name,
         "task_sha256": task_sha256,
         "task_count": task_count,
+        "limit": limit,
         "n": config.n,
         "branches": config.branches,
         "budget_tokens": config.budget_tokens,
@@ -201,10 +220,12 @@ def run_harness(
     config: HarnessConfig,
     *,
     transport: httpx.BaseTransport | None = None,
+    limit: int | None = None,
 ) -> tuple[BenchmarkResults, Path]:
     """Run every task for every configured seed and write one validated artifact."""
 
     tasks, task_sha256 = load_bench_tasks(config.task_file)
+    tasks = _limit_tasks(tasks, limit)
     started_at = datetime.now(UTC).isoformat()
     ordered: list[TaskResult | None] = [None] * (len(tasks) * len(config.seeds))
     with httpx.Client(
@@ -229,7 +250,7 @@ def run_harness(
             model=config.model,
             base_url_redacted=_redact_base_url(str(config.base_url)),
             arm=config.arm,
-            params=_params(config, task_sha256, len(tasks)),
+            params=_params(config, task_sha256, len(tasks), limit),
             seeds=config.seeds,
             git_sha=_git_sha(),
             started_at=started_at,

@@ -39,6 +39,29 @@ python -m thoughtbench run \
   --dry-run
 ```
 
+Add `--limit N` to either a real run or dry run to use only the first `N`
+tasks for a smoke test. The task-file hash and explicit limit are retained in
+real-run metadata.
+
+## Release accuracy experiment
+
+The publishable GSM8K accuracy-table protocol is ready in three configs:
+
+- `configs/release-accuracy-autotree-single.json`: one AutoTree chat completion.
+- `configs/release-accuracy-vllm-bestof4.json`: four vLLM choices with client-side majority voting.
+- `configs/release-accuracy-autotree-tree4.json`: four AutoTree branches using beam policy and a 2,048-token aggregate tree budget (4 x the 512-token completion cap).
+
+All three use the full `gsm8k_test.jsonl` task set, seeds `[101, 102, 103]`,
+`max_tokens: 512`, and `temperature: 0.7`. Their `.invalid` endpoints and model
+names are placeholders that must be replaced before a measured run. From the
+`thoughtbench/` directory, validate one task per config without network access:
+
+```console
+python -m thoughtbench run --config configs/release-accuracy-autotree-single.json --dry-run --limit 1
+python -m thoughtbench run --config configs/release-accuracy-vllm-bestof4.json --dry-run --limit 1
+python -m thoughtbench run --config configs/release-accuracy-autotree-tree4.json --dry-run --limit 1
+```
+
 ## Arms
 
 - `single` sends one `/v1/chat/completions` request with one choice.
@@ -82,9 +105,10 @@ and summary.
 `tasks/math12.jsonl` contains the twelve in-house arithmetic checks used by the
 earlier ad hoc benchmark.
 
-`tasks/gsm8k_subset.jsonl` contains the first 50 records of the official GSM8K
-test split, with the gold value taken from each record's `####` answer marker.
-The source dataset is the OpenAI `grade-school-math` repository.
+`tasks/gsm8k_test.jsonl` contains all 1,319 records of the official GSM8K test
+split. `tasks/gsm8k_subset.jsonl` retains the first 50 records for examples.
+Gold values come from each source record's `####` answer marker. Full source,
+conversion, citation, and MIT license details are in `tasks/README.md`.
 
 Standard citation:
 
@@ -95,10 +119,11 @@ Standard citation:
 
 ## Tests
 
-The full package suite is CPU-only and does not call an external service:
+The full package suite is CPU-only and does not call an external service. From
+the `thoughtbench/` directory, run:
 
 ```console
-core/.venv/Scripts/python.exe -m pytest thoughtbench -q
+python -m pytest tests -q
 ```
 
 HTTP behavior is covered with mocked transports. The retained integration test
