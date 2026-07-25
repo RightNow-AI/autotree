@@ -4,6 +4,14 @@
 2. Start the honest demo with `uv run autotree serve --engine treekv --model gpt2` (add `--device cuda --dtype bfloat16` on a GPU box).
 3. Open `/playground`, run a prompt, and watch real branches grow, get pruned, and resolve live. (Merge events render when an engine emits them; the TreeKV engine does not emit merges yet.)
 
+## Generation concurrency
+
+The server runs up to eight generations concurrently by default and queues
+later requests. Use `--max-concurrent-requests` to set a different positive
+limit. `/metrics` exposes `in_flight_requests`, `queued_requests`, and
+`concurrency_rejections_total`. See `CONCURRENCY.md` for the shared-state audit
+and `CAPACITY.md` for KV memory implications.
+
 ## Graceful shutdown
 
 On cooperative `SIGTERM` or Ctrl+C shutdown, the server stops admitting new

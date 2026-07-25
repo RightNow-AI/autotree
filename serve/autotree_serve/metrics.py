@@ -63,6 +63,21 @@ class ServeMetrics:
             "Requests or streams rejected because Tree-KV capacity was exhausted.",
             registry=self.registry,
         )
+        self.in_flight_requests = Gauge(
+            "in_flight_requests",
+            "Generation requests currently executing inside the concurrency limit.",
+            registry=self.registry,
+        )
+        self.queued_requests = Gauge(
+            "queued_requests",
+            "Generation requests waiting for a concurrency slot.",
+            registry=self.registry,
+        )
+        self.concurrency_rejections_total = Counter(
+            "concurrency_rejections_total",
+            "Generation requests rejected because the runner stopped admission.",
+            registry=self.registry,
+        )
         self.quota_rejections_total = Counter(
             "quota_rejections_total",
             "Requests rejected by per-tenant generated-token quotas.",

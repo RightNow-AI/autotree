@@ -1,0 +1,324 @@
+- generic [active] [ref=f1e1]:
+  - generic:
+    - generic:
+      - generic:
+        - link "RightNow logo RightNow":
+          - /url: /
+          - generic:
+            - img "RightNow logo"
+            - generic: RightNow
+      - generic:
+        - navigation:
+          - link "Editor":
+            - /url: /editor
+          - link "Code":
+            - /url: /code
+          - link "Enterprises":
+            - /url: /forge
+          - link "Changelog":
+            - /url: /changelog
+          - link "Contact":
+            - /url: /contact
+        - generic:
+          - link "RUNINFRA ↗":
+            - /url: https://runinfra.ai/
+            - generic: RUNINFRA
+            - generic: ↗
+  - main [ref=f1e2]:
+    - article [ref=f1e4]:
+      - generic [ref=f1e5]:
+        - heading "Serve reasoning as a tree." [level=1] [ref=f1e6]:
+          - text: Serve
+          - generic [ref=f1e7]: reasoning
+          - text: as a tree.
+        - paragraph [ref=f1e8]: AutoTree forks KV cache mid-generation, prunes weak branches with instant memory reclaim, and holds every request to a hard token budget. Open source, Apache-2.0, adoption is one base_url change.
+        - generic [ref=f1e9]:
+          - link "View on GitHub" [ref=f1e10] [cursor=pointer]:
+            - /url: https://github.com/RightNow-AI/autotree
+          - link "Contact Sales" [ref=f1e14] [cursor=pointer]:
+            - /url: /enterprises
+        - paragraph [ref=f1e15]:
+          - text: Available on
+          - link "RunInfra" [ref=f1e16] [cursor=pointer]:
+            - /url: https://runinfra.ai
+          - text: to optimize and deploy any HuggingFace model.
+      - generic [ref=f1e17]:
+        - generic [ref=f1e18]:
+          - generic [ref=f1e20]:
+            - generic [ref=f1e21]: 8.79x
+            - generic [ref=f1e22]: KV reuse, measured end to end
+          - generic [ref=f1e24]:
+            - generic [ref=f1e25]: 31.6x
+            - generic [ref=f1e26]: kernel branch scaling at 32 branches
+          - generic [ref=f1e28]:
+            - generic [ref=f1e29]: instant
+            - generic [ref=f1e30]: page reclaim on branch prune
+          - generic [ref=f1e32]:
+            - generic [ref=f1e33]: verified
+            - generic [ref=f1e34]: token parity vs stock HuggingFace
+        - paragraph [ref=f1e35]: Every number ships with its model, hardware, workload, and configs in the repository. No exceptions.
+      - generic [ref=f1e37]:
+        - heading "One prompt, many candidate answers" [level=2] [ref=f1e38]
+        - paragraph [ref=f1e39]: Each character is one token of KV cache. Stock serving computes every candidate to the end. AutoTree shares the prefix, prunes losers mid-flight, and reclaims their memory instantly.
+        - generic [ref=f1e40]:
+          - generic [ref=f1e41]:
+            - generic [ref=f1e42]: "Stock serving: sequential best-of-4"
+            - generic [ref=f1e48]: 0 KV pages held|prompt stored per candidate
+          - generic [ref=f1e49]:
+            - generic [ref=f1e50]: "AutoTree: beam-8, one shared prefix"
+            - generic [ref=f1e60]:
+              - text: 0 KV pages held|
+              - generic [ref=f1e61]: 1.00x
+              - text: KV reuse|pruned pages return to the pool
+      - generic [ref=f1e63]:
+        - heading "Branching is nearly free" [level=2] [ref=f1e64]
+        - paragraph [ref=f1e65]: "The tree-attention kernel scales close to linearly with branch count: exploring 32 candidates costs about as much per candidate as exploring one."
+        - generic [ref=f1e66]:
+          - generic [ref=f1e67]:
+            - generic [ref=f1e68]: Decode throughput vs branch count, relative to 1 branch
+            - img [ref=f1e69]:
+              - generic [ref=f1e70]: 1x
+              - generic [ref=f1e72]: 8x
+              - generic [ref=f1e74]: 16x
+              - generic [ref=f1e76]: 24x
+              - generic [ref=f1e78]: 32x
+              - generic [ref=f1e80]: "1"
+              - generic [ref=f1e81]: "2"
+              - generic [ref=f1e82]: "4"
+              - generic [ref=f1e83]: "8"
+              - generic [ref=f1e84]: "16"
+              - generic [ref=f1e85]: "32"
+              - generic [ref=f1e86]: branches
+            - generic [ref=f1e92]:
+              - generic [ref=f1e93]: ━ context 128 (31.6x at 32 branches)
+              - generic [ref=f1e94]: ━ context 512
+              - generic [ref=f1e95]: ━ context 2048
+              - generic [ref=f1e96]: ╌ ideal linear
+            - paragraph [ref=f1e97]: Measured on A100 SXM4, bf16, tree-attention decode kernel microbenchmark, 200 iterations. Kernel-level result, not an end-to-end serving number. Raw data and repro command in the repository.
+          - generic [ref=f1e98]:
+            - generic [ref=f1e99]: Decode tokens computed per task, same engine, same protocol
+            - generic [ref=f1e100]:
+              - generic [ref=f1e102]:
+                - generic [ref=f1e103]: Sequential best-of-4 (stock serving pattern)
+                - generic [ref=f1e104]: 2,560 tokens / task
+              - generic [ref=f1e107]:
+                - generic [ref=f1e108]: AutoTree beam-8, 1,920 budget
+                - generic [ref=f1e109]: 969 tokens / task
+              - generic [ref=f1e112]:
+                - generic [ref=f1e113]: vLLM (prefix caching on, native n>1)
+                - generic [ref=f1e114]: measuring, publishing with raw logs
+              - generic [ref=f1e117]:
+                - generic [ref=f1e118]: SGLang (radix cache on, native n>1)
+                - generic [ref=f1e119]: measuring, publishing with raw logs
+            - paragraph [ref=f1e121]: "Measured: H100, Qwen3-8B bf16, 25 numeric MATH-500 tasks, 3 seeds. At this configuration the tree spends 2.6x fewer decode tokens per task and reaches 8.79x KV reuse; accuracy without a value scorer is lower than sequential sampling, and that measured baseline ships in the repository. Head-to-head vLLM and SGLang rows land with their best flags on, full sweeps, seeds, and one-command repro."
+      - generic [ref=f1e123]:
+        - heading "What only a tree engine can do" [level=2] [ref=f1e124]
+        - paragraph [ref=f1e125]: Prefix caching shares prompts. It cannot share what has not been generated yet. Tree execution shares the reasoning itself.
+        - table [ref=f1e127]:
+          - rowgroup [ref=f1e128]:
+            - row [ref=f1e129]:
+              - columnheader "Capability" [ref=f1e130]
+              - columnheader "AutoTree" [ref=f1e131]
+              - columnheader "vLLM" [ref=f1e132]
+              - columnheader "SGLang" [ref=f1e133]
+              - columnheader "TRT-LLM" [ref=f1e134]
+          - rowgroup [ref=f1e135]:
+            - row [ref=f1e136]:
+              - cell "OpenAI-compatible API" [ref=f1e137]
+              - cell "✓" [ref=f1e138]
+              - cell "✓" [ref=f1e139]
+              - cell "✓" [ref=f1e140]
+              - cell "✓" [ref=f1e141]
+            - row [ref=f1e142]:
+              - cell "Prefix / radix caching" [ref=f1e143]
+              - cell "✓" [ref=f1e144]
+              - cell "✓" [ref=f1e145]
+              - cell "✓" [ref=f1e146]
+              - cell "✓" [ref=f1e147]
+            - row [ref=f1e148]:
+              - cell "Continuous batching" [ref=f1e149]
+              - cell "✓" [ref=f1e150]
+              - cell "✓" [ref=f1e151]
+              - cell "✓" [ref=f1e152]
+              - cell "✓" [ref=f1e153]
+            - row [ref=f1e154]:
+              - cell "Mid-generation KV fork (token granularity)" [ref=f1e155]
+              - cell "✓" [ref=f1e156]
+              - cell "-" [ref=f1e157]
+              - cell "-" [ref=f1e158]
+              - cell "-" [ref=f1e159]
+            - row [ref=f1e160]:
+              - cell "Mid-flight prune with instant page reclaim" [ref=f1e161]
+              - cell "✓" [ref=f1e162]
+              - cell "-" [ref=f1e163]
+              - cell "-" [ref=f1e164]
+              - cell "-" [ref=f1e165]
+            - row [ref=f1e166]:
+              - cell "Hard token budget across a branch family" [ref=f1e167]
+              - cell "✓" [ref=f1e168]
+              - cell "-" [ref=f1e169]
+              - cell "-" [ref=f1e170]
+              - cell "-" [ref=f1e171]
+            - row [ref=f1e172]:
+              - cell "Tree policies (beam / best-first / MCTS) in the scheduler" [ref=f1e173]
+              - cell "✓" [ref=f1e174]
+              - cell "-" [ref=f1e175]
+              - cell "-" [ref=f1e176]
+              - cell "-" [ref=f1e177]
+            - row [ref=f1e178]:
+              - cell "Branch-level value-scorer hook" [ref=f1e179]
+              - cell "✓" [ref=f1e180]
+              - cell "-" [ref=f1e181]
+              - cell "-" [ref=f1e182]
+              - cell "-" [ref=f1e183]
+            - row [ref=f1e184]:
+              - cell "Native tree endpoint (/v1/tree/completions)" [ref=f1e185]
+              - cell "✓" [ref=f1e186]
+              - cell "-" [ref=f1e187]
+              - cell "-" [ref=f1e188]
+              - cell "-" [ref=f1e189]
+      - generic [ref=f1e191]:
+        - heading "Measured, not projected" [level=2] [ref=f1e192]
+        - paragraph [ref=f1e193]: Every claim carries its regime. Full head-to-head benchmarks against stock vLLM and SGLang, with their best flags on, are running now and will be published here with raw logs and one-command repro.
+        - table [ref=f1e195]:
+          - rowgroup [ref=f1e196]:
+            - row [ref=f1e197]:
+              - columnheader "Metric" [ref=f1e198]
+              - columnheader "Result" [ref=f1e199]
+              - columnheader "Regime" [ref=f1e200]
+          - rowgroup [ref=f1e201]:
+            - row [ref=f1e202]:
+              - cell "KV reuse ratio, end to end" [ref=f1e203]
+              - cell "8.79x" [ref=f1e204]
+              - cell "H100, Qwen3-8B bf16, MATH-500, beam-8, 3 seeds" [ref=f1e205]
+            - row [ref=f1e206]:
+              - cell "Tree-attention kernel branch scaling, 1 to 32 branches" [ref=f1e207]
+              - cell "31.6x" [ref=f1e208]
+              - cell "A100, bf16, context 128, kernel microbenchmark" [ref=f1e209]
+            - row [ref=f1e210]:
+              - cell "Triton kernel parity vs reference implementation" [ref=f1e211]
+              - cell "106 / 106 tests" [ref=f1e212]
+              - cell "A100, all dtypes and GQA ratios" [ref=f1e213]
+            - row [ref=f1e214]:
+              - cell "Greedy token parity vs stock HuggingFace" [ref=f1e215]
+              - cell "exact" [ref=f1e216]
+              - cell "Qwen3-8B, CUDA bf16" [ref=f1e217]
+        - paragraph [ref=f1e218]: "We publish our negatives too: naive log-probability branch selection loses to sequential sampling on solvable tasks. That measured baseline is exactly what the pluggable value scorer exists to beat. Details in the repository."
+      - generic [ref=f1e220]:
+        - heading "FAQs" [level=2] [ref=f1e221]
+        - generic [ref=f1e222]:
+          - generic [ref=f1e223]:
+            - button "What is AutoTree and who is it for?" [ref=f1e224] [cursor=pointer]
+            - generic: "AutoTree is an open-source serving engine that executes LLM reasoning as a tree: one shared prefix, many candidate branches, weak branches pruned mid-flight with their memory reclaimed instantly. It is built for teams running reasoning workloads, best-of-n sampling, RL rollout generation, and agentic search."
+          - generic [ref=f1e229]:
+            - button "How is this different from prefix caching in vLLM or SGLang?" [ref=f1e230] [cursor=pointer]
+            - generic: Prefix caching shares the prompt across requests. It cannot share generated tokens, because the prefix does not exist until someone generates it. AutoTree forks the KV cache mid-generation, so branches share the reasoning computed so far, and pruned branches return their memory to the pool while the request is still running.
+          - generic [ref=f1e235]:
+            - button "Is it production ready?" [ref=f1e236] [cursor=pointer]
+            - generic: The reference engine is open source today with the full test suite, measured results, and an honest limitations list. A production-speed engine built on SGLang's runtime, inheriting its continuous batching and speed with tree execution added, is in active development in the open.
+          - generic [ref=f1e241]:
+            - button "Where are the benchmarks against vLLM and SGLang?" [ref=f1e242] [cursor=pointer]
+            - generic: "Running now. The protocol is public before the results: baselines run with prefix caching enabled and their best flags, full branch-count sweeps rather than cherry-picked points, ablations that isolate where wins come from, and two workloads where we expect parity or worse, published anyway. Every number will ship with configs, seeds, and raw logs."
+          - generic [ref=f1e247]:
+            - button "What is the value scorer?" [ref=f1e248] [cursor=pointer]
+            - generic: "The component that decides which branches live. AutoTree ships with a pluggable scoring interface: log-probability, self-consistency voting, or your own reward model. Our published measurements show naive scoring is not enough, which is precisely why the interface is open and the baseline is public."
+          - generic [ref=f1e253]:
+            - button "Is it really open source?" [ref=f1e254] [cursor=pointer]
+            - generic [ref=f1e258]:
+              - text: Yes. Apache-2.0, no strings. The engine, the benchmark harness, the results data, and the paper-grade validation evidence are all in
+              - link "the repository" [ref=f1e259] [cursor=pointer]:
+                - /url: https://github.com/RightNow-AI/autotree
+              - text: .
+          - generic [ref=f1e260]:
+            - button "Can we get support running it?" [ref=f1e261] [cursor=pointer]
+            - generic [ref=f1e265]:
+              - text: Enterprise deployments, Helm charts, SLURM templates, and dashboards ship in the repository. For dedicated support,
+              - link "contact us" [ref=f1e266] [cursor=pointer]:
+                - /url: /enterprises
+              - text: .
+      - generic [ref=f1e269]:
+        - paragraph [ref=f1e270]:
+          - text: Part of the
+          - strong [ref=f1e271]: RightNow
+          - text: ecosystem.
+        - paragraph [ref=f1e272]:
+          - text: For GPU kernel optimization, see
+          - link "Forge" [ref=f1e273] [cursor=pointer]:
+            - /url: /forge
+          - text: .
+        - generic [ref=f1e274]:
+          - link "GitHub" [ref=f1e275] [cursor=pointer]:
+            - /url: https://github.com/RightNow-AI/autotree
+          - link "Community" [ref=f1e283] [cursor=pointer]:
+            - /url: https://discord.gg/sSJqgNnq6X
+  - contentinfo [ref=f1e288]:
+    - generic [ref=f1e289]:
+      - generic [ref=f1e290]:
+        - generic [ref=f1e291]:
+          - link "RightNow logo RightNow" [ref=f1e292] [cursor=pointer]:
+            - /url: /
+            - generic [ref=f1e293]:
+              - img "RightNow logo" [ref=f1e294]
+              - generic [ref=f1e295]: RightNow
+          - paragraph [ref=f1e296]: "> AI-powered code editor designed specifically for Nvidia GPU hardware development."
+          - generic [ref=f1e297]:
+            - generic [ref=f1e298]:
+              - link "Follow us on GitHub" [ref=f1e299] [cursor=pointer]:
+                - /url: https://github.com/RightNow-AI
+              - link "Follow us on LinkedIn" [ref=f1e303] [cursor=pointer]:
+                - /url: https://www.linkedin.com/company/rightnowai/
+              - link "Follow us on X" [ref=f1e308] [cursor=pointer]:
+                - /url: https://x.com/rightnowai_co
+              - link "Follow us on Discord" [ref=f1e313] [cursor=pointer]:
+                - /url: https://discord.gg/sSJqgNnq6X
+            - generic [ref=f1e317]:
+              - img "NVIDIA Inception Program" [ref=f1e319]
+              - link "AICPA SOC 2 Type 2 SOC 2 Type 2" [ref=f1e320] [cursor=pointer]:
+                - /url: https://trust.rightnowai.co/
+                - img "AICPA SOC 2 Type 2" [ref=f1e322]
+                - generic [ref=f1e323]: SOC 2 Type 2
+              - link "Backed by Y Combinator" [ref=f1e324] [cursor=pointer]:
+                - /url: https://www.ycombinator.com/companies/rightnow
+        - generic [ref=f1e330]:
+          - generic [ref=f1e331]:
+            - heading "Product" [level=4] [ref=f1e332]
+            - generic [ref=f1e333]:
+              - link "Forge" [ref=f1e334] [cursor=pointer]:
+                - /url: /forge
+              - link "Docs" [ref=f1e335] [cursor=pointer]:
+                - /url: /docs
+              - link "Pricing" [ref=f1e336] [cursor=pointer]:
+                - /url: /pricing
+              - link "Preview Program" [ref=f1e337] [cursor=pointer]:
+                - /url: /waitlist
+              - link "Changelog" [ref=f1e338] [cursor=pointer]:
+                - /url: /changelog
+          - generic [ref=f1e339]:
+            - heading "Resources" [level=4] [ref=f1e340]
+            - generic [ref=f1e341]:
+              - link "Blog" [ref=f1e342] [cursor=pointer]:
+                - /url: /blog
+              - link "Request a Feature" [ref=f1e343] [cursor=pointer]:
+                - /url: /request
+          - generic [ref=f1e344]:
+            - heading "Company" [level=4] [ref=f1e345]
+            - generic [ref=f1e346]:
+              - link "Contact" [ref=f1e347] [cursor=pointer]:
+                - /url: /contact
+              - link "Privacy Policy" [ref=f1e348] [cursor=pointer]:
+                - /url: /privacy-policy
+              - link "Terms of Use" [ref=f1e349] [cursor=pointer]:
+                - /url: /terms-of-use
+      - generic [ref=f1e350]:
+        - paragraph [ref=f1e351]: © 2026 RightNow AI. All rights reserved.
+        - generic [ref=f1e352]:
+          - group "Theme selector" [ref=f1e353]:
+            - generic [ref=f1e354]:
+              - button [ref=f1e355] [cursor=pointer]
+              - button [ref=f1e358] [cursor=pointer]
+              - button [ref=f1e365] [cursor=pointer]
+          - link "Privacy Policy" [ref=f1e368] [cursor=pointer]:
+            - /url: /privacy-policy
+          - generic [ref=f1e369]: /
+          - link "Terms of Use" [ref=f1e370] [cursor=pointer]:
+            - /url: /terms-of-use

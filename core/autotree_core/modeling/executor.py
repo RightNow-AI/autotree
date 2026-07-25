@@ -266,7 +266,7 @@ class ModelExecutor:
         """Run real model prefill and place every layer's K/V in Tree-KV pages."""
         ids = self._normalize_input_ids(input_ids)
         attention_mask = torch.ones_like(ids)
-        with torch.inference_mode():
+        with _FOREST_FORWARD_LOCK, torch.inference_mode():
             output = self.model(
                 input_ids=ids,
                 attention_mask=attention_mask,
@@ -333,7 +333,7 @@ class ModelExecutor:
             dtype=torch.long,
             device=self.config.device,
         )
-        with torch.inference_mode():
+        with _FOREST_FORWARD_LOCK, torch.inference_mode():
             output = self.model(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
