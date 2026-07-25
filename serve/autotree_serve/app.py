@@ -33,7 +33,7 @@ from .engine import (
 )
 from .enterprise import EnterpriseConfig, EnterpriseMiddleware
 from .metrics import ServeMetrics
-from .runner import EngineRunner
+from .runner import DEFAULT_MAX_CONCURRENT_REQUESTS, EngineRunner
 from .schema import ChatCompletionRequest, TreeCompletionRequest
 
 
@@ -268,10 +268,15 @@ def create_app(
     model_id: str = "autotree-deterministic",
     registry: CollectorRegistry | None = None,
     enterprise_config: EnterpriseConfig | None = None,
+    max_concurrent_requests: int = DEFAULT_MAX_CONCURRENT_REQUESTS,
 ) -> FastAPI:
     selected_engine = engine or DeterministicEngine(model_id=model_id)
-    engine_runner = EngineRunner(selected_engine)
     metrics = ServeMetrics(registry)
+    engine_runner = EngineRunner(
+        selected_engine,
+        max_concurrent_requests=max_concurrent_requests,
+        metrics=metrics,
+    )
     enterprise = enterprise_config or EnterpriseConfig.from_env()
     started_at = time.monotonic()
 

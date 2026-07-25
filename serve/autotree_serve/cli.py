@@ -11,6 +11,7 @@ import uvicorn
 
 from .app import create_app
 from .engine import DeterministicEngine
+from .runner import DEFAULT_MAX_CONCURRENT_REQUESTS
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -70,6 +71,15 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("float32", "bfloat16", "float16"),
         help="model dtype for --engine treekv (default: float32)",
     )
+    serve.add_argument(
+        "--max-concurrent-requests",
+        type=_positive_int,
+        default=DEFAULT_MAX_CONCURRENT_REQUESTS,
+        help=(
+            "Maximum generation requests allowed in flight before later requests "
+            f"queue (default: {DEFAULT_MAX_CONCURRENT_REQUESTS})."
+        ),
+    )
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8000)
     return parser
@@ -98,7 +108,14 @@ def main(argv: Sequence[str] | None = None) -> None:
         print(f"Unknown engine '{args.engine}'. No fallback was selected.", file=sys.stderr)
         raise SystemExit(2)
 
-    uvicorn.run(create_app(engine), host=args.host, port=args.port)
+    uvicorn.run(
+        create_app(
+            engine,
+            max_concurrent_requests=args.max_concurrent_requests,
+        ),
+        host=args.host,
+        port=args.port,
+    )
 
 
 def _load_treekv_engine(

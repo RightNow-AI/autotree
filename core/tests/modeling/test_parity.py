@@ -222,6 +222,31 @@ def test_forest_forward_captures_attention_binding_after_lock_acquisition(
         model_module.eager_attention_forward = original_attention
 
 
+def test_prefill_and_decode_share_the_forest_mutation_lock(
+    model_case: ModelCase,
+    monkeypatch,
+) -> None:
+    class CountingLock:
+        def __init__(self) -> None:
+            self.entries = 0
+
+        def __enter__(self):
+            self.entries += 1
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+    lock = CountingLock()
+    monkeypatch.setattr(executor_module, "_FOREST_FORWARD_LOCK", lock)
+
+    execution = model_case.executor.prefill(model_case.prompt[:5])
+    token_id = int(torch.argmax(execution.next_logits(execution.root_id)).item())
+    model_case.executor.decode(execution, execution.root_id, token_id)
+
+    assert lock.entries == 2
+
+
 def test_greedy_tokens_equal_stock_huggingface_generate(
     model_case: ModelCase,
 ) -> None:

@@ -7,6 +7,18 @@ For `autotree serve --engine treekv`, the default page limit is:
 The default `kv_branch_headroom` is `1.5`. `--kv-pages` overrides the derived
 limit, and `--kv-branch-headroom` changes the multiplier.
 
+The server admits up to eight generation requests at once by default. Set
+`--max-concurrent-requests` to a positive integer to tune that bound. Requests
+beyond the bound wait for a slot instead of entering the engine immediately.
+The `in_flight_requests` and `queued_requests` gauges expose current admission
+state, and `concurrency_rejections_total` counts requests rejected after the
+runner has stopped admission during shutdown.
+
+The current Tree-KV implementation creates one `PagedKVPool` per request, so
+the concurrency limit also bounds the number of full request-local pools that
+can exist at once. Lower the limit when model and KV allocations approach the
+device memory budget.
+
 Prompt admission and decode exhaustion are exposed as
 `kv_capacity_exhausted` errors instead of server errors. A non-streaming
 request receives HTTP 429. Once an SSE response has started, the server emits

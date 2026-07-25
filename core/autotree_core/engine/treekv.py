@@ -8,6 +8,7 @@ import time
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from threading import RLock
 from typing import Any, Literal, Protocol
 
 import torch
@@ -114,6 +115,7 @@ class TreeKVEngine:
             executor = ModelExecutor(executor_config)
         self.executor = executor
         self.tokenizer = tokenizer or AutoTokenizer.from_pretrained(model_id)
+        self._tokenizer_lock = RLock()
         if scheduler_factory is None:
             try:
                 from autotree_scheduler import Scheduler
@@ -124,6 +126,7 @@ class TreeKVEngine:
                 ) from error
             scheduler_factory = Scheduler
         self._scheduler_factory = scheduler_factory
+        self._scheduler_factory_lock = RLock()
         self._dedup_every_steps = dedup_every_steps
         self._metadata = ModelMetadata(
             id=model_id,
@@ -163,7 +166,8 @@ class TreeKVEngine:
         except KVCapacityError as error:
             raise self._capacity_error("admission", error) from error
         emvpt_config = self._emvpt_config(request)
-        scheduler = self._scheduler_factory(self._scheduler_config(request))
+        with self._scheduler_factory_lock:
+            scheduler = self._scheduler_factory(self._scheduler_config(request))
         generator = torch.Generator(device=self.executor.config.device).manual_seed(
             self._resolve_seed(request.seed)
         )
@@ -377,11 +381,12 @@ class TreeKVEngine:
 
             events: list[TokenGenerated] = []
             for branch_id, (token_id, logprob) in zip(branch_ids, sampled, strict=True):
-                token = self.tokenizer.decode(
-                    [token_id],
-                    skip_special_tokens=True,
-                    clean_up_tokenization_spaces=False,
-                )
+                with self._tokenizer_lock:
+                    token = self.tokenizer.decode(
+                        [token_id],
+                        skip_special_tokens=True,
+                        clean_up_tokenization_spaces=False,
+                    )
                 token_index = token_counts[branch_id]
                 token_counts[branch_id] += 1
                 ranking_token_counts[branch_id] += 1
@@ -626,7 +631,8 @@ class TreeKVEngine:
             f"{message.role}: {message.content}" for message in request.messages
         )
         prompt = f"{prompt}\nassistant:"
-        token_ids = self.tokenizer.encode(prompt, add_special_tokens=True)
+        with self._tokenizer_lock:
+            token_ids = self.tokenizer.encode(prompt, add_special_tokens=True)
         if not token_ids:
             raise ValueError("tokenizer produced an empty prompt")
         return list(token_ids)

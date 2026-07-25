@@ -25,6 +25,7 @@ def test_cli_help_is_honest_about_deterministic_engine(capsys):
     assert "The deterministic engine always exposes deterministic-demo." in normalized_output
     assert "--kv-pages" in output
     assert "--kv-branch-headroom" in output
+    assert "--max-concurrent-requests" in output
 
 
 def test_treekv_engine_model_load_failure_is_honest(capsys, monkeypatch):
@@ -68,6 +69,8 @@ def test_cli_starts_treekv_server(monkeypatch):
             "256",
             "--kv-branch-headroom",
             "2.0",
+            "--max-concurrent-requests",
+            "3",
         ]
     )
 
@@ -75,6 +78,7 @@ def test_cli_starts_treekv_server(monkeypatch):
     assert called["model_id"] == "gpt2"
     assert called["kv_pages"] == 256
     assert called["kv_branch_headroom"] == 2.0
+    assert called["app"].state.engine_runner.max_concurrent_requests == 3
     assert called["host"] == "127.0.0.1"
     assert called["port"] == 8000
 
@@ -178,3 +182,4 @@ def test_parser_device_defaults_stay_cpu_float32() -> None:
 
     assert args.device == "cpu"
     assert args.dtype == "float32"
+    assert args.max_concurrent_requests == 8
