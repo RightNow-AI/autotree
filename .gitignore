@@ -31,3 +31,5 @@ CLAUDE.md
 AGENTS-GOALs/
 figures/make_mechanism_gif.py
 paper/
+.playwright-mcp/
+autotree-*.png

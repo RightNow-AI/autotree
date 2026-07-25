@@ -1,2 +1,0 @@
-[     281ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://127.0.0.1:3006/_vercel/insights/script.js:0
-[     281ms] [ERROR] Refused to execute script from 'http://127.0.0.1:3006/_vercel/insights/script.js' because its MIME type ('text/html') is not executable, and strict MIME type checking is enabled. @ http://127.0.0.1:3006/autotree:0
