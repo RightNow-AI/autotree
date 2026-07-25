@@ -21,6 +21,9 @@ class TreeParameters(BaseModel):
     branches: int = Field(ge=1, le=64)
     budget_tokens: int = Field(ge=1, le=1_000_000)
     scorer: Literal["logprob", "self_consistency"] | None = None
+    consensus_interval: int = Field(default=32, ge=1)
+    consensus_warmup: int = Field(default=64, ge=0)
+    min_survivors: int = Field(default=2, ge=1, le=64)
 
 
 class StreamOptions(BaseModel):

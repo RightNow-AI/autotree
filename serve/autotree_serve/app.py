@@ -495,6 +495,9 @@ def _to_engine_request(body: ChatCompletionRequest) -> GenerationRequest:
             branches=body.tree.branches,
             budget_tokens=body.tree.budget_tokens,
             scorer=body.tree.scorer,
+            consensus_interval=body.tree.consensus_interval,
+            consensus_warmup=body.tree.consensus_warmup,
+            min_survivors=body.tree.min_survivors,
         )
     return GenerationRequest(
         model=body.model,

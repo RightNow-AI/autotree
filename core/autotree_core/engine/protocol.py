@@ -32,6 +32,9 @@ class TreeExecution:
     value_margin: float = 0.35
     value_min_keep: int = 2
     value_warmup_tokens: int = 8
+    consensus_interval: int = 32
+    consensus_warmup: int = 64
+    min_survivors: int = 2
 
 
 @dataclass(frozen=True, slots=True)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from autotree_serve import cli
+from autotree_serve.app import _to_engine_request
 from autotree_serve.cli import main
 from autotree_serve.engine import (
     DeterministicEngine,
@@ -11,6 +12,7 @@ from autotree_serve.engine import (
     Message,
     TreeExecution,
 )
+from autotree_serve.schema import ChatCompletionRequest
 
 
 def test_cli_help_is_honest_about_deterministic_engine(capsys):
@@ -25,6 +27,31 @@ def test_cli_help_is_honest_about_deterministic_engine(capsys):
     assert "The deterministic engine always exposes deterministic-demo." in normalized_output
     assert "--kv-pages" in output
     assert "--kv-branch-headroom" in output
+
+
+def test_consensus_tree_params_flow_to_engine_request() -> None:
+    body = ChatCompletionRequest.model_validate(
+        {
+            "model": "toy",
+            "messages": [{"role": "user", "content": "compare"}],
+            "tree": {
+                "policy": "beam",
+                "branches": 4,
+                "budget_tokens": 64,
+                "scorer": "self_consistency",
+                "consensus_interval": 8,
+                "consensus_warmup": 16,
+                "min_survivors": 3,
+            },
+        }
+    )
+
+    request = _to_engine_request(body)
+
+    assert request.tree is not None
+    assert request.tree.consensus_interval == 8
+    assert request.tree.consensus_warmup == 16
+    assert request.tree.min_survivors == 3
 
 
 def test_treekv_engine_model_load_failure_is_honest(capsys, monkeypatch):

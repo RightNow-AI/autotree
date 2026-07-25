@@ -53,6 +53,9 @@ except ModuleNotFoundError as error:
         branches: int
         budget_tokens: int
         scorer: str | None
+        consensus_interval: int = 32
+        consensus_warmup: int = 64
+        min_survivors: int = 2
 
     @dataclass(frozen=True, slots=True)
     class GenerationRequest:

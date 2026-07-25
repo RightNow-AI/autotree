@@ -325,6 +325,110 @@ class SharedBudgetScheduler:
         return self._states.get(branch)
 
 
+class ConsensusPruningScheduler:
+    """Model the Rust external-value handshake and speculative kill behavior."""
+
+    def __init__(self, config: dict[str, object]) -> None:
+        self.config = config
+        self._external = config["scorer"] == "external"
+        self._commands: deque[dict[str, object]] = deque()
+        self._states = {0: "active"}
+        self._live: set[int] = set()
+        self._pending: set[int] = set()
+        self._round: set[int] = set()
+        self._scores: dict[int, float] = {}
+        self._tokens_per_branch: dict[int, int] = {}
+
+    def feed_event(self, event: dict[str, object]) -> None:
+        event_type = str(event["type"])
+        branch_id = int(event["branch"])
+        if event_type == "token_sampled":
+            if self._external and not bool(event.get("eos", False)):
+                self._pending.add(branch_id)
+            if branch_id == 0:
+                if not self._external:
+                    self._fork_root()
+                return
+            self._tokens_per_branch[branch_id] += 1
+            self._round.add(branch_id)
+            if not self._external:
+                self._finish_round()
+            return
+        if event_type == "value_scored":
+            assert branch_id in self._pending
+            self._pending.remove(branch_id)
+            self._scores[branch_id] = float(event["score"])
+            if branch_id == 0:
+                self._fork_root()
+            else:
+                self._finish_round()
+            return
+        if event_type == "branch_exhausted":
+            self._states[branch_id] = "finalized"
+            self._live.discard(branch_id)
+            self._pending.discard(branch_id)
+            self._round.discard(branch_id)
+            self._commands.append({"type": "finalize", "branch": branch_id})
+
+    def poll_commands(self) -> list[dict[str, object]]:
+        commands = list(self._commands)
+        self._commands.clear()
+        return commands
+
+    def branch_state(self, branch: int) -> str | None:
+        return self._states.get(branch)
+
+    def _fork_root(self) -> None:
+        branches = int(self.config["branches"])
+        self._states[0] = "expanded"
+        self._live = set(range(1, branches + 1))
+        self._states.update({branch: "active" for branch in self._live})
+        self._tokens_per_branch = {branch: 0 for branch in self._live}
+        self._commands.extend(
+            [
+                {"type": "fork_at", "branch": 0, "width": branches},
+                *(
+                    {"type": "continue", "branch": branch}
+                    for branch in sorted(self._live)
+                ),
+            ]
+        )
+
+    def _finish_round(self) -> None:
+        if self._round != self._live or self._pending.intersection(self._live):
+            return
+
+        if self._external:
+            best_score = max(self._scores[branch] for branch in self._live)
+            victims = [
+                branch
+                for branch in sorted(self._live)
+                if self._scores[branch] < best_score
+            ]
+            for branch in victims:
+                self._live.remove(branch)
+                self._states[branch] = "killed"
+                self._commands.append(
+                    {"type": "kill", "branch": branch, "reason": "speculative_kill"}
+                )
+
+        self._round.clear()
+        if all(self._tokens_per_branch[branch] == 4 for branch in self._live):
+            for branch in sorted(self._live):
+                self._states[branch] = "finalized"
+                self._commands.append({"type": "finalize", "branch": branch})
+            self._states[0] = "killed"
+            self._commands.append(
+                {"type": "kill", "branch": 0, "reason": "tree_budget_exhausted"}
+            )
+            return
+
+        self._commands.extend(
+            {"type": "continue", "branch": branch}
+            for branch in sorted(self._live)
+        )
+
+
 def request(*, budget_tokens: int = 3) -> GenerationRequest:
     return GenerationRequest(
         model="tiny-engine-model",
@@ -443,6 +547,39 @@ def test_emvpt_uses_beam_scheduler_with_documented_defaults() -> None:
     assert tree.value_min_keep == 2
     assert tree.value_warmup_tokens == 8
     assert TreeKVEngine._scheduler_config(generation_request)["policy"] == "beam"
+
+
+def test_consensus_tree_params_use_documented_defaults() -> None:
+    tree = TreeExecution(
+        policy="beam",
+        branches=3,
+        budget_tokens=64,
+        scorer="self_consistency",
+    )
+
+    assert tree.consensus_interval == 32
+    assert tree.consensus_warmup == 64
+    assert tree.min_survivors == 2
+
+
+@pytest.mark.parametrize("scorer", [None, "logprob"])
+def test_logprob_scheduler_config_is_unchanged(scorer: str | None) -> None:
+    generation_request = replace(
+        request(),
+        tree=replace(request().tree, scorer=scorer),
+    )
+
+    assert TreeKVEngine._scheduler_config(generation_request) == {
+        "policy": "beam",
+        "branches": 2,
+        "fork_width": 2,
+        "fork_at_tokens": [1],
+        "max_depth": 4,
+        "budget_tokens": 3,
+        "per_branch_token_budget": 4,
+        "seed": 41,
+        "scorer": "logprob",
+    }
 
 
 def test_fork_ids_events_and_kill_reclaim_real_tree_kv_pages(tiny_engine_case) -> None:
@@ -582,6 +719,61 @@ def test_winner_uses_scheduler_mean_score_across_fork(
     assert done.tree_summary.final_scores["branch-1"] == pytest.approx(-5.05)
 
 
+def test_logprob_event_output_is_unchanged(
+    tiny_engine_case,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = TreeKVEngine(
+        model_id="tiny-engine-model",
+        executor=tiny_engine_case.executor,
+        tokenizer=tiny_engine_case.tokenizer,
+        scheduler_factory=ScriptedScheduler,
+    )
+    samples = iter([(10, -0.5), (11, -0.2), (12, -0.7)])
+    decoded = {10: "root-", 11: "winner", 12: "loser"}
+    monkeypatch.setattr(
+        engine,
+        "_sample",
+        lambda _logits, _request, _generator: next(samples),
+    )
+    monkeypatch.setattr(
+        tiny_engine_case.tokenizer,
+        "decode",
+        lambda token_ids, **_kwargs: decoded[token_ids[0]],
+    )
+    generation_request = replace(
+        request(),
+        tree=replace(request().tree, scorer="logprob"),
+    )
+
+    events = asyncio.run(collect(engine, generation_request))
+
+    assert [event.type for event in events] == [
+        "branch_started",
+        "token",
+        "branch_started",
+        "branch_started",
+        "token",
+        "token",
+        "branch_pruned",
+        "branch_pruned",
+        "done",
+    ]
+    done = next(event for event in events if isinstance(event, GenerationDone))
+    assert done.branch_id == "branch-1"
+    assert done.text == "root-winner"
+    assert done.usage.completion_tokens == 3
+    assert done.tree_summary is not None
+    assert done.tree_summary.tokens_spent_per_branch == {
+        "branch-0": 1,
+        "branch-1": 1,
+        "branch-2": 1,
+    }
+    assert done.tree_summary.final_scores == pytest.approx(
+        {"branch-0": -0.5, "branch-1": -0.35, "branch-2": -0.6}
+    )
+
+
 def test_real_scheduler_never_exceeds_requested_tree_budget(tiny_engine_case) -> None:
     pytest.importorskip("autotree_scheduler")
     engine = TreeKVEngine(
@@ -686,19 +878,25 @@ def test_eos_token_is_not_forked_after_sampling(tiny_engine_case) -> None:
     assert done.finish_reason == "stop"
 
 
-def test_self_consistency_uses_logprob_scheduler_during_execution(
+def test_self_consistency_uses_external_scheduler_during_execution(
     tiny_engine_case,
 ) -> None:
     observed_events: list[dict[str, object]] = []
+    observed_configs: list[dict[str, object]] = []
     expected_id = int(
         tiny_engine_case.executor.prefill([5, 6, 7, 8]).next_logits(0).argmax().item()
     )
     tiny_engine_case.tokenizer.eos_token_id = expected_id
+
+    def scheduler_factory(config: dict[str, object]) -> EosForkScheduler:
+        observed_configs.append(config)
+        return EosForkScheduler(config, observed_events)
+
     engine = TreeKVEngine(
         model_id="tiny-engine-model",
         executor=tiny_engine_case.executor,
         tokenizer=tiny_engine_case.tokenizer,
-        scheduler_factory=lambda config: EosForkScheduler(config, observed_events),
+        scheduler_factory=scheduler_factory,
     )
     generation_request = replace(
         request(),
@@ -712,9 +910,152 @@ def test_self_consistency_uses_logprob_scheduler_during_execution(
 
     events = asyncio.run(collect(engine, generation_request))
 
+    assert observed_configs[0]["scorer"] == "external"
+    assert observed_configs[0]["speculative_kill_margin"] == pytest.approx(0.0)
     assert [event["type"] for event in observed_events] == ["token_sampled"]
     done = next(event for event in events if isinstance(event, GenerationDone))
     assert done.finish_reason == "stop"
+
+
+def _run_execution_consensus_case(
+    tiny_engine_case,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    scorer: str,
+    outlier_answer: str = "9 ",
+) -> tuple[list[object], GenerationDone]:
+    engine = TreeKVEngine(
+        model_id="tiny-engine-model",
+        executor=tiny_engine_case.executor,
+        tokenizer=tiny_engine_case.tokenizer,
+        scheduler_factory=ConsensusPruningScheduler,
+        dedup_every_steps=None,
+    )
+    samples_by_round = [
+        [(10, -0.1)],
+        [(21, -0.05), (22, -0.1), (23, -0.2)],
+        [(31, -0.05), (32, -0.1), (33, -0.2)],
+        [(41, -0.05), (42, -0.1), (43, -0.2)],
+        [(51, -0.05), (52, -0.1), (53, -0.2)],
+    ]
+    if scorer == "self_consistency" and outlier_answer != "7 ":
+        samples_by_round[3] = samples_by_round[3][:2]
+        samples_by_round[4] = samples_by_round[4][:2]
+    samples = iter(sample for round_samples in samples_by_round for sample in round_samples)
+    decoded = {
+        10: "Reasoning. ",
+        21: "Answer: ",
+        22: "Answer: ",
+        23: "Answer: ",
+        31: "7 ",
+        32: "7 ",
+        33: outlier_answer,
+        41: "work ",
+        42: "work ",
+        43: "work ",
+        51: "done",
+        52: "done",
+        53: "done",
+    }
+    monkeypatch.setattr(
+        engine,
+        "_sample",
+        lambda _logits, _request, _generator: next(samples),
+    )
+    monkeypatch.setattr(
+        tiny_engine_case.tokenizer,
+        "decode",
+        lambda token_ids, **_kwargs: decoded[token_ids[0]],
+    )
+    tiny_engine_case.tokenizer.eos_token_id = None
+    generation_request = replace(
+        request(budget_tokens=13),
+        max_tokens=5,
+        tree=TreeExecution(
+            policy="beam",
+            branches=3,
+            budget_tokens=13,
+            scorer=scorer,
+            consensus_interval=1,
+            consensus_warmup=3,
+            min_survivors=2,
+        ),
+    )
+
+    events = asyncio.run(collect(engine, generation_request))
+    done = next(event for event in events if isinstance(event, GenerationDone))
+    return events, done
+
+
+def test_self_consistency_kills_diverging_branch_before_its_budget_is_spent(
+    tiny_engine_case,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events, done = _run_execution_consensus_case(
+        tiny_engine_case,
+        monkeypatch,
+        scorer="self_consistency",
+    )
+
+    assert any(
+        isinstance(event, BranchPruned)
+        and event.branch_id == "branch-3"
+        and event.reason == "speculative_kill"
+        for event in events
+    )
+    assert done.tree_summary is not None
+    assert done.tree_summary.tokens_spent_per_branch == {
+        "branch-0": 1,
+        "branch-1": 4,
+        "branch-2": 4,
+        "branch-3": 2,
+    }
+
+
+def test_self_consistency_spends_fewer_tokens_than_logprob_at_equal_winner(
+    tiny_engine_case,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, logprob_done = _run_execution_consensus_case(
+        tiny_engine_case,
+        monkeypatch,
+        scorer="logprob",
+    )
+    _, consensus_done = _run_execution_consensus_case(
+        tiny_engine_case,
+        monkeypatch,
+        scorer="self_consistency",
+    )
+
+    assert consensus_done.branch_id == logprob_done.branch_id == "branch-1"
+    assert consensus_done.text == logprob_done.text == "Reasoning. Answer: 7 work done"
+    assert consensus_done.usage.completion_tokens == 11
+    assert logprob_done.usage.completion_tokens == 13
+    assert consensus_done.usage.completion_tokens < logprob_done.usage.completion_tokens
+
+
+def test_self_consistency_all_agree_respects_min_survivors(
+    tiny_engine_case,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events, done = _run_execution_consensus_case(
+        tiny_engine_case,
+        monkeypatch,
+        scorer="self_consistency",
+        outlier_answer="7 ",
+    )
+
+    assert not any(
+        isinstance(event, BranchPruned) and event.reason == "speculative_kill"
+        for event in events
+    )
+    assert done.tree_summary is not None
+    assert done.tree_summary.tokens_spent_per_branch == {
+        "branch-0": 1,
+        "branch-1": 4,
+        "branch-2": 4,
+        "branch-3": 4,
+    }
 
 
 def _run_self_consistency_case(

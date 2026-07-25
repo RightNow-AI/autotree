@@ -17,6 +17,7 @@ from autotree_core.kv import KVCapacityError
 from autotree_core.modeling import ModelExecution, ModelExecutor, ModelExecutorConfig
 
 from .answers import extract_final_answer
+from .consensus import ConsensusConfig, consensus_scores
 from .protocol import (
     BranchMerged,
     BranchPruned,
@@ -59,6 +60,13 @@ class _EMVPTConfig:
     margin: float
     min_keep: int
     warmup_tokens: int
+
+
+@dataclass(frozen=True, slots=True)
+class _ConsensusRuntimeConfig:
+    interval: int
+    warmup_tokens: int
+    scoring: ConsensusConfig
 
 
 _ENGINE_DTYPES = {
@@ -163,6 +171,7 @@ class TreeKVEngine:
         except KVCapacityError as error:
             raise self._capacity_error("admission", error) from error
         emvpt_config = self._emvpt_config(request)
+        consensus_config = self._consensus_config(request)
         scheduler = self._scheduler_factory(self._scheduler_config(request))
         generator = torch.Generator(device=self.executor.config.device).manual_seed(
             self._resolve_seed(request.seed)
@@ -203,11 +212,60 @@ class TreeKVEngine:
             state = scheduler_branch_state(branch_id)
             return state is None or state == "active"
 
+        def scheduler_branch_is_live(branch_id: int) -> bool:
+            state = scheduler_branch_state(branch_id)
+            return state is None or state in {"active", "expanded"}
+
         def value_estimate(branch_id: int) -> float | None:
             count = value_token_counts[branch_id]
             if count == 0:
                 return None
             return value_logprob_sums[branch_id] / count
+
+        def feed_consensus_values(sampled_branch_ids: tuple[int, ...]) -> None:
+            if consensus_config is None:
+                return
+
+            pending = [
+                branch_id
+                for branch_id in sorted(sampled_branch_ids)
+                if branch_id not in exhaustion_pending
+                and scheduler_branch_is_live(branch_id)
+            ]
+            if not pending:
+                return
+
+            live = [
+                branch_id
+                for branch_id in sorted(active)
+                if branch_id not in exhaustion_pending
+                and scheduler_branch_is_live(branch_id)
+            ]
+            score_now = any(
+                ranking_token_counts[branch_id] >= consensus_config.warmup_tokens
+                and (
+                    ranking_token_counts[branch_id] - consensus_config.warmup_tokens
+                )
+                % consensus_config.interval
+                == 0
+                for branch_id in pending
+            )
+            if score_now:
+                scores_by_branch = consensus_scores(
+                    {branch_id: path_text[branch_id] for branch_id in live},
+                    consensus_config.scoring,
+                )
+            else:
+                scores_by_branch = {branch_id: 1.0 for branch_id in live}
+
+            for branch_id in pending:
+                scheduler.feed_event(
+                    {
+                        "type": "value_scored",
+                        "branch": branch_id,
+                        "score": scores_by_branch[branch_id],
+                    }
+                )
 
         def prune_low_value_branches() -> tuple[BranchPruned, ...]:
             nonlocal pruned_count
@@ -424,6 +482,7 @@ class TreeKVEngine:
             unique_tokens_per_step.append(
                 len({execution.token_ids(branch_id) for branch_id in branch_ids})
             )
+            feed_consensus_values(branch_ids)
             value_prune_events = prune_low_value_branches()
             scheduler_commands = tuple(scheduler.poll_commands())
             merge_events: tuple[BranchMerged, ...] = ()
@@ -765,6 +824,37 @@ class TreeKVEngine:
             warmup_tokens=tree.value_warmup_tokens,
         )
 
+    @staticmethod
+    def _consensus_config(
+        request: GenerationRequest,
+    ) -> _ConsensusRuntimeConfig | None:
+        tree = request.tree
+        if tree is None or tree.scorer != "self_consistency":
+            return None
+        if (
+            isinstance(tree.consensus_interval, bool)
+            or not isinstance(tree.consensus_interval, int)
+            or tree.consensus_interval <= 0
+        ):
+            raise ValueError("consensus_interval must be a positive integer")
+        if (
+            isinstance(tree.consensus_warmup, bool)
+            or not isinstance(tree.consensus_warmup, int)
+            or tree.consensus_warmup < 0
+        ):
+            raise ValueError("consensus_warmup must be a non-negative integer")
+        if (
+            isinstance(tree.min_survivors, bool)
+            or not isinstance(tree.min_survivors, int)
+            or tree.min_survivors <= 0
+        ):
+            raise ValueError("min_survivors must be a positive integer")
+        return _ConsensusRuntimeConfig(
+            interval=tree.consensus_interval,
+            warmup_tokens=tree.consensus_warmup,
+            scoring=ConsensusConfig(min_survivors=tree.min_survivors),
+        )
+
     @classmethod
     def _scheduler_config(cls, request: GenerationRequest) -> dict[str, object]:
         tree = request.tree
@@ -778,7 +868,7 @@ class TreeKVEngine:
                 "TreeKVEngine scorer must be None, 'logprob', or 'self_consistency'"
             )
         branches = tree.branches if tree else 1
-        return {
+        config: dict[str, object] = {
             "policy": policy,
             "branches": branches,
             "fork_width": branches,
@@ -787,8 +877,13 @@ class TreeKVEngine:
             "budget_tokens": tree.budget_tokens if tree else request.max_tokens,
             "per_branch_token_budget": request.max_tokens,
             "seed": cls._resolve_seed(request.seed),
-            "scorer": "logprob",
+            "scorer": (
+                "external" if requested_scorer == "self_consistency" else "logprob"
+            ),
         }
+        if requested_scorer == "self_consistency":
+            config["speculative_kill_margin"] = 0.0
+        return config
 
     @staticmethod
     def _resolve_seed(seed: int | None) -> int:
